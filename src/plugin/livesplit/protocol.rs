@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use serde::{Serialize, Serializer};
 
@@ -17,23 +17,47 @@ pub enum Command {
     Resume,
     UndoSplit,
     SkipSplit,
+    // No desktop equivalent — the desktop initializes game time on first
+    // `setgametime`, so `to_line()` returns `None` for this variant.
     InitializeGameTime,
-    SetGameTime {
-        #[serde(serialize_with = "TimeSpan::serialize")]
-        time: TimeSpan,
-    },
+    SetGameTime { time: TimeSpan },
     PauseGameTime,
     ResumeGameTime,
-    SetLoadingTimes {
-        #[serde(serialize_with = "TimeSpan::serialize")]
-        time: TimeSpan,
-    },
+    SetLoadingTimes { time: TimeSpan },
     Ping,
 }
 
-/// A duration serialized as `<secs>.<9-digit-nanos>` to match
+impl Command {
+    /// Render as a single line for the LiveSplit desktop's legacy line
+    /// protocol (`CommandServer.cs:ProcessMessage`). No trailing `\n` —
+    /// the caller adds the line terminator. Returns `None` for commands
+    /// with no desktop equivalent (currently only `InitializeGameTime`).
+    pub fn to_line(&self) -> Option<String> {
+        Some(match self {
+            Self::Start => "start".into(),
+            Self::Split => "split".into(),
+            Self::SplitOrStart => "startorsplit".into(),
+            Self::Reset { .. } => "reset".into(),
+            Self::Pause => "pause".into(),
+            Self::Resume => "resume".into(),
+            Self::UndoSplit => "undosplit".into(),
+            Self::SkipSplit => "skipsplit".into(),
+            Self::InitializeGameTime => return None,
+            Self::SetGameTime { time } => format!("setgametime {time}"),
+            Self::PauseGameTime => "pausegametime".into(),
+            Self::ResumeGameTime => "unpausegametime".into(),
+            Self::SetLoadingTimes { time } => format!("setloadingtimes {time}"),
+            Self::Ping => "ping".into(),
+        })
+    }
+}
+
+/// A duration formatted as `<secs>.<9-digit-nanos>` to match
 /// livesplit-core's wire format (see `serialize_time_span` in
-/// livesplit-core/src/networking/server_protocol.rs:103-109).
+/// livesplit-core/src/networking/server_protocol.rs:103-109). The
+/// desktop's `TimeSpanParser.Parse` truncates fractions past 7 digits
+/// and accepts the same shape, so this `Display` impl serves both the
+/// JSON (LSO) and line-protocol (desktop) encoders.
 #[derive(Clone, Copy, Debug)]
 pub struct TimeSpan(pub Duration);
 
@@ -43,11 +67,17 @@ impl From<Duration> for TimeSpan {
     }
 }
 
-impl TimeSpan {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+impl fmt::Display for TimeSpan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let secs = self.0.as_secs();
         let nanos = self.0.subsec_nanos();
-        s.collect_str(&format_args!("{secs}.{nanos:09}"))
+        write!(f, "{secs}.{nanos:09}")
+    }
+}
+
+impl Serialize for TimeSpan {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
     }
 }
 
@@ -111,6 +141,132 @@ mod tests {
         assert_eq!(
             json(&cmd),
             r#"{"command":"setLoadingTimes","time":"1.500000000"}"#
+        );
+    }
+
+    #[test]
+    fn line_unit_variants() {
+        assert_eq!(Command::Start.to_line().as_deref(), Some("start"));
+        assert_eq!(Command::Split.to_line().as_deref(), Some("split"));
+        assert_eq!(
+            Command::SplitOrStart.to_line().as_deref(),
+            Some("startorsplit")
+        );
+        assert_eq!(Command::Pause.to_line().as_deref(), Some("pause"));
+        assert_eq!(Command::Resume.to_line().as_deref(), Some("resume"));
+        assert_eq!(Command::UndoSplit.to_line().as_deref(), Some("undosplit"));
+        assert_eq!(Command::SkipSplit.to_line().as_deref(), Some("skipsplit"));
+        assert_eq!(
+            Command::PauseGameTime.to_line().as_deref(),
+            Some("pausegametime")
+        );
+        assert_eq!(
+            Command::ResumeGameTime.to_line().as_deref(),
+            Some("unpausegametime")
+        );
+        assert_eq!(Command::Ping.to_line().as_deref(), Some("ping"));
+    }
+
+    #[test]
+    fn line_reset_ignores_save_attempt() {
+        assert_eq!(
+            Command::Reset { save_attempt: None }.to_line().as_deref(),
+            Some("reset")
+        );
+        assert_eq!(
+            Command::Reset {
+                save_attempt: Some(true)
+            }
+            .to_line()
+            .as_deref(),
+            Some("reset")
+        );
+    }
+
+    #[test]
+    fn line_initialize_game_time_has_no_desktop_equivalent() {
+        assert!(Command::InitializeGameTime.to_line().is_none());
+    }
+
+    #[test]
+    fn line_set_game_time_serializes_secs_and_padded_nanos() {
+        let cmd = Command::SetGameTime {
+            time: TimeSpan(Duration::new(83, 25)),
+        };
+        assert_eq!(cmd.to_line().as_deref(), Some("setgametime 83.000000025"));
+    }
+
+    #[test]
+    fn line_set_loading_times_zero_pads_to_nine_digits() {
+        let cmd = Command::SetLoadingTimes {
+            time: TimeSpan(Duration::from_millis(1500)),
+        };
+        assert_eq!(
+            cmd.to_line().as_deref(),
+            Some("setloadingtimes 1.500000000")
+        );
+    }
+
+    fn ts(d: Duration) -> String {
+        TimeSpan(d).to_string()
+    }
+
+    #[test]
+    fn timespan_zero() {
+        assert_eq!(ts(Duration::ZERO), "0.000000000");
+    }
+
+    #[test]
+    fn timespan_whole_second_pads_fractional() {
+        assert_eq!(ts(Duration::from_secs(1)), "1.000000000");
+        assert_eq!(ts(Duration::from_secs(42)), "42.000000000");
+    }
+
+    #[test]
+    fn timespan_sub_second() {
+        assert_eq!(ts(Duration::from_millis(500)), "0.500000000");
+        assert_eq!(ts(Duration::from_micros(1)), "0.000001000");
+    }
+
+    #[test]
+    fn timespan_single_nano_padded_to_nine_digits() {
+        assert_eq!(ts(Duration::new(0, 1)), "0.000000001");
+    }
+
+    #[test]
+    fn timespan_max_subsec_nanos() {
+        assert_eq!(ts(Duration::new(7, 999_999_999)), "7.999999999");
+    }
+
+    #[test]
+    fn timespan_large_secs_value() {
+        assert_eq!(
+            ts(Duration::from_secs(u64::MAX)),
+            "18446744073709551615.000000000"
+        );
+    }
+
+    #[test]
+    fn timespan_from_duration_preserves_inner() {
+        let d = Duration::new(123, 456);
+        let TimeSpan(inner) = TimeSpan::from(d);
+        assert_eq!(inner, d);
+    }
+
+    #[test]
+    fn timespan_serde_path_matches_display() {
+        // The serde serializer hook (`TimeSpan::serialize`) should produce
+        // the same string as `Display`. Verified transitively via the
+        // `Command::SetGameTime` JSON test above, but pin it directly here
+        // so a future refactor that splits the two encoders trips this
+        // test rather than the higher-level one.
+        let span = TimeSpan(Duration::new(60, 250_000));
+        let display = span.to_string();
+        let cmd = Command::SetGameTime { time: span };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(
+            json.contains(&format!(r#""time":"{display}""#)),
+            "JSON {json:?} did not contain Display output {display:?}"
         );
     }
 }

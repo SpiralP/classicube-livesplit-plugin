@@ -53,15 +53,18 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                 "&e  server (ws://{}): {server}",
                 livesplit::SERVER_BIND_ADDR
             ));
-            let client = if livesplit::client_connected() {
-                "&aconnected"
-            } else {
-                "&7dialing"
-            };
-            chat_print(&format!(
-                "&e  client ({}): {client}",
-                livesplit::CLIENT_TARGET_URL
-            ));
+            #[cfg(windows)]
+            {
+                let client = if livesplit::client_connected() {
+                    "&aconnected"
+                } else {
+                    "&7dialing"
+                };
+                chat_print(&format!(
+                    "&e  client ({}): {client}",
+                    livesplit::CLIENT_PIPE_NAME
+                ));
+            }
         }
         ["start"] => livesplit::send(LsCommand::Start),
         ["split"] => livesplit::send(LsCommand::Split),
