@@ -1,10 +1,13 @@
 pub mod async_manager;
+pub mod command;
 pub mod logger;
 pub mod module;
 
 use std::cell::RefCell;
 
-use crate::plugin::{async_manager::AsyncManagerModule, logger::LoggerModule, module::Module};
+use crate::plugin::{
+    async_manager::AsyncManagerModule, command::CommandModule, logger::LoggerModule, module::Module,
+};
 
 thread_local!(
     static MAIN_MODULE: RefCell<Option<MainModule>> = const { RefCell::new(None) };
@@ -13,24 +16,31 @@ thread_local!(
 struct MainModule {
     logger: LoggerModule,
     async_manager: AsyncManagerModule,
+    command: CommandModule,
 }
 
 impl MainModule {
     fn init() -> Self {
         let logger = LoggerModule::init();
         let async_manager = AsyncManagerModule::init();
+        let command = CommandModule::init();
 
         Self {
             logger,
             async_manager,
+            command,
         }
     }
 }
 
 impl Module for MainModule {
     fn children(&mut self) -> Vec<&mut dyn Module> {
-        vec![&mut self.logger, &mut self.async_manager]
+        vec![&mut self.logger, &mut self.async_manager, &mut self.command]
     }
+}
+
+pub fn is_plugin_active() -> bool {
+    MAIN_MODULE.with_borrow(|m| m.is_some())
 }
 
 pub fn initialize() {

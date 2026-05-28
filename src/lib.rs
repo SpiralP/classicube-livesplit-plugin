@@ -1,9 +1,12 @@
+pub mod chat;
 pub mod plugin;
 
 use std::{os::raw::c_int, ptr};
 
 use classicube_helpers::time;
 use classicube_sys::IGameComponent;
+
+pub use crate::chat::chat_print;
 
 extern "C" fn init() {
     time!("plugin::initialize()", 5000, {
