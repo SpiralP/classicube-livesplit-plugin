@@ -10,6 +10,6 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = { version = "=1.0.102", features = ["backtrace"] }
 classicube-helpers = { git = "https://github.com/SpiralP/rust-classicube-helpers.git" }
-classicube-sys = "=5.0.0"
+classicube-sys = "=6.0.4"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
