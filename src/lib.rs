@@ -1,5 +1,4 @@
 pub mod chat;
-pub mod chat_codec;
 pub mod plugin;
 
 use std::{os::raw::c_int, ptr};

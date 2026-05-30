@@ -27,21 +27,23 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit undosplit | skipsplit");
     chat_print("&e  /client LiveSplit loadtest | splits");
     chat_print("&e  /client LiveSplit track encode");
-    chat_print("&e  /client LiveSplit mb <subcmd ...>  (sends /mb <subcmd ...> <track>)");
-    chat_print("&e  /client LiveSplit nas               (copies `msg <track>` to clipboard)");
+    chat_print("&e  /client LiveSplit mb <subcmd ...>  (one chained /mb to deliver all lines)");
+    chat_print(
+        "&e  /client LiveSplit nas               (copies all lines, \\n-separated, to clipboard)",
+    );
 }
 
 /// Encode the currently loaded track for chat delivery, chat-printing
 /// the standard error message on `None`/`Err` and returning `Some` only
 /// on success. Shared between the `track encode`, `mb`, and `nas` arms.
-fn encode_track_or_print_error() -> Option<String> {
+fn encode_track_or_print_error() -> Option<Vec<String>> {
     match splits::current_track() {
         None => {
             chat_print("&eLiveSplit: no track loaded (try /client LiveSplit loadtest)");
             None
         }
         Some(track) => match encode_for_chat(&track) {
-            Ok(line) => Some(line),
+            Ok(lines) => Some(lines),
             Err(e) => {
                 chat_print(&format!("&cLiveSplit: encode failed: {e}"));
                 None
@@ -49,6 +51,12 @@ fn encode_track_or_print_error() -> Option<String> {
         },
     }
 }
+
+/// `INPUTWIDGET_MAX_LINES * INPUTWIDGET_LEN = 3 * 64`. ClassiCube's
+/// chat input widget caps a single typed message at this many codepoints,
+/// which sets the practical upper bound on a chained `/mb` payload the
+/// operator can send in one go.
+const TYPED_INPUT_CAP: usize = 192;
 
 extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
     // The command list is permanent (no Commands_Unregister), so this
@@ -106,29 +114,52 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         ["loadtest"] => splits::load_fixture(),
         ["splits"] => splits::print_status(),
         ["track", "encode"] => {
-            if let Some(line) = encode_track_or_print_error() {
-                let cp_len = line.chars().count();
+            if let Some(lines) = encode_track_or_print_error() {
+                let (name, n) = splits::current_track()
+                    .map(|t| (t.name, t.checkpoints.len()))
+                    .unwrap_or_default();
+                let l = lines.len();
                 chat_print(&format!(
-                    "&aLiveSplit: encoded track ({cp_len} cp); paste into /mb sign:"
+                    "&aLiveSplit: encoded track (\"{name}\", {n} checkpoints, {l} lines); paste \
+                     each into its own /mb sign block in order:"
                 ));
-                chat_print(&line);
+                for line in &lines {
+                    chat_print(line);
+                }
             }
         }
         ["mb" | "messageblock", rest @ ..] if !rest.is_empty() => {
-            if let Some(line) = encode_track_or_print_error() {
-                chat::send(format!("/mb {} {}", rest.join(" "), line));
+            if let Some(lines) = encode_track_or_print_error() {
+                let first = &lines[0];
+                // MCGalaxy's MessageBlock command-chain separator is `" |/"`
+                // (MCGalaxy/MCGalaxy/Blocks/Extended/MessageBlock.cs:85) —
+                // space, pipe, slash. The leading space is required: without
+                // it the whole chained payload stores as one literal sign
+                // message and no subcommand fires on click.
+                let chained: String = lines[1..].iter().map(|l| format!(" |/msgme {l}")).collect();
+                let payload = format!("/mb {} {first}{chained}", rest.join(" "));
+                let cp_len = payload.chars().count();
+                if cp_len > TYPED_INPUT_CAP {
+                    chat_print(&format!(
+                        "&cLiveSplit: chained /mb payload too long ({cp_len}cp); use /client \
+                         LiveSplit nas to paste manually"
+                    ));
+                } else {
+                    chat::send(payload);
+                }
             }
         }
         ["nas"] => {
-            if let Some(line) = encode_track_or_print_error() {
-                let clip = format!("msg {line}");
-                let cp_len = clip.chars().count();
-                let owned = OwnedString::new(&clip);
+            if let Some(lines) = encode_track_or_print_error() {
+                let joined = lines.join("\n");
+                let cp_len = joined.chars().count();
+                let n = lines.len();
+                let owned = OwnedString::new(&joined);
                 unsafe {
                     Clipboard_SetText(owned.as_cc_string());
                 }
                 chat_print(&format!(
-                    "&aLiveSplit: copied NAS line ({cp_len} cp) to clipboard"
+                    "&aLiveSplit: copied NAS lines ({n} lines, {cp_len} cp total) to clipboard"
                 ));
             }
         }

@@ -9,8 +9,14 @@ use classicube_sys::{
 };
 use tracing::debug;
 
-use crate::plugin::{
-    is_plugin_active, module::Module, splits, track_source::decode::try_decode_chat_line,
+use crate::{
+    chat_print,
+    plugin::{
+        is_plugin_active,
+        module::Module,
+        splits,
+        track_source::decode::{FrameOutcome, feed_chat_line},
+    },
 };
 
 // Semantics: `None` = our hook is not installed; `Some(prior)` =
@@ -28,20 +34,31 @@ extern "C" fn message_handler(data: *mut u8) {
 
         if message_type == MsgType_MSG_TYPE_NORMAL as u8 {
             let text = unsafe { UNSAFE_GetString(&bytes[1..]) }.to_string();
-            if let Some(track) = try_decode_chat_line(&text) {
-                debug!(
-                    name = track.name,
-                    checkpoints = track.checkpoints.len(),
-                    "received chat-protocol track"
-                );
-                if splits::load_track(track) {
-                    // Suppress the source chat line — it's a glyph blob,
-                    // not something the user wants to see.
+            match feed_chat_line(&text) {
+                FrameOutcome::NotOurs => {
+                    // Fall through to the chain so the line renders.
+                }
+                FrameOutcome::ParseError(msg) => {
+                    chat_print(&format!("&cLiveSplit: malformed track frame: {msg}"));
+                    // Fall through so the raw line still renders.
+                }
+                FrameOutcome::Buffered => {
+                    // Mid-track frame; suppress.
                     return;
                 }
-                // load_track returned false: plugin mid-teardown. Fall
-                // through so the line renders normally rather than
-                // silently disappearing.
+                FrameOutcome::Loaded(track) => {
+                    debug!(
+                        name = track.name,
+                        checkpoints = track.checkpoints.len(),
+                        "received chat-protocol track"
+                    );
+                    if splits::load_track(track) {
+                        return;
+                    }
+                    // load_track returned false: plugin mid-teardown.
+                    // Fall through so the line renders normally rather
+                    // than silently disappearing.
+                }
             }
         }
     }

@@ -1,86 +1,64 @@
-use std::io::Read;
-
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail};
 use classicube_sys::Vec3;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::Error as _};
 
 use crate::plugin::livesplit::Command;
 
-/// Upper bound on the postcard-decoded size of a wire-encoded `Track`.
-/// Defends against zstd-bomb payloads from hostile servers: a 4-byte
-/// crafted zstd frame can declare an arbitrarily large output, so the
-/// decoder runs in streaming mode and bails the moment the cap is
-/// exceeded. 16 KiB comfortably fits any plausible `Track` (postcard
-/// adds ~26 bytes per checkpoint plus name/label varints).
-const MAX_DECOMPRESSED_BYTES: usize = 16 * 1024;
-
-/// Runtime keeps `min`/`max` as `Vec3<f32>`, but the chat wire form
-/// is the manual [`Serialize`] / [`Deserialize`] impl below — `min`
-/// quantized to `[u16; 3]` (block precision) and `size = max - min`
-/// as `[u8; 3]`. ClassiCube world coords are non-negative and a
-/// "big" CC map is roughly 700 × 300 × 1000 blocks, an order of
-/// magnitude under `u16::MAX`, so `u16` covers any `min` with
-/// margin; checkpoint volumes are typically a handful of blocks per
-/// axis, so `u8` covers any `size` without ever triggering postcard's
-/// 2-byte varint for the alternative `max: u16` form. Out-of-range
-/// `min` values clamp; serialization errors if any axis extent
-/// exceeds 255 blocks.
+/// Quantize an `f32` world coord to block precision (`u16`). CC world
+/// coords are non-negative and a "big" CC map is roughly 700 × 300 × 1000
+/// blocks, an order of magnitude under `u16::MAX`, so `u16` covers any
+/// `min` with margin. Out-of-range values clamp.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "value is clamp()'d to the u16 range before the cast"
 )]
-fn quantize_axis(v: f32) -> u16 {
+pub(crate) fn quantize_axis(v: f32) -> u16 {
     v.round().clamp(0.0, f32::from(u16::MAX)) as u16
 }
 
-fn vec3_to_u16(v: Vec3) -> [u16; 3] {
+pub(crate) fn vec3_to_u16(v: Vec3) -> [u16; 3] {
     [quantize_axis(v.x), quantize_axis(v.y), quantize_axis(v.z)]
 }
 
-fn u16_to_vec3([x, y, z]: [u16; 3]) -> Vec3 {
+pub(crate) fn u16_to_vec3([x, y, z]: [u16; 3]) -> Vec3 {
     Vec3::new(f32::from(x), f32::from(y), f32::from(z))
+}
+
+/// Quantized wire form of an [`Aabb`]: `min` as `[u16; 3]` block coords,
+/// extents as `[u8; 3]` (typical checkpoint volumes are a handful of
+/// blocks per axis). Shared between the plaintext encoder (which writes
+/// these as comma-separated decimals on the wire) and the decoder
+/// (which reads them back). Errors if any axis extent exceeds 255 blocks.
+pub(crate) fn aabb_to_min_size(aabb: Aabb) -> Result<([u16; 3], [u8; 3])> {
+    let min = vec3_to_u16(aabb.min);
+    let max = vec3_to_u16(aabb.max);
+    let mut size = [0u8; 3];
+    for axis in 0..3 {
+        let extent = max[axis].saturating_sub(min[axis]);
+        let Ok(byte) = u8::try_from(extent) else {
+            bail!("AABB extent {extent} exceeds 255 blocks on one axis");
+        };
+        size[axis] = byte;
+    }
+    Ok((min, size))
+}
+
+pub(crate) fn aabb_from_min_size(min: [u16; 3], size: [u8; 3]) -> Aabb {
+    let max = [
+        min[0].saturating_add(u16::from(size[0])),
+        min[1].saturating_add(u16::from(size[1])),
+        min[2].saturating_add(u16::from(size[2])),
+    ];
+    Aabb {
+        min: u16_to_vec3(min),
+        max: u16_to_vec3(max),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Aabb {
     pub min: Vec3,
     pub max: Vec3,
-}
-
-impl Serialize for Aabb {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let min = vec3_to_u16(self.min);
-        let max = vec3_to_u16(self.max);
-        let to_u8 = |extent: u16| {
-            u8::try_from(extent).map_err(|_| {
-                S::Error::custom(format!(
-                    "AABB extent {extent} exceeds 255 blocks on one axis (chat wire-form cap)"
-                ))
-            })
-        };
-        let size = [
-            to_u8(max[0].saturating_sub(min[0]))?,
-            to_u8(max[1].saturating_sub(min[1]))?,
-            to_u8(max[2].saturating_sub(min[2]))?,
-        ];
-        (min, size).serialize(s)
-    }
-}
-
-impl<'de> Deserialize<'de> for Aabb {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let (min, size): ([u16; 3], [u8; 3]) = Deserialize::deserialize(d)?;
-        let max = [
-            min[0].saturating_add(u16::from(size[0])),
-            min[1].saturating_add(u16::from(size[1])),
-            min[2].saturating_add(u16::from(size[2])),
-        ];
-        Ok(Aabb {
-            min: u16_to_vec3(min),
-            max: u16_to_vec3(max),
-        })
-    }
 }
 
 impl Aabb {
@@ -123,105 +101,6 @@ pub struct Checkpoint {
 pub struct Track {
     pub name: String,
     pub checkpoints: Vec<Checkpoint>,
-}
-
-/// Wire-only twin of [`Checkpoint`] used by `Track`'s manual serde
-/// impl. `kind` is implied by position (see [`expected_kind`]) so it's
-/// absent from the wire form; the encode side validates the convention
-/// and the decode side reconstructs it.
-#[derive(Serialize, Deserialize)]
-struct WireCheckpoint {
-    aabb: Aabb,
-    label: String,
-}
-
-/// The position-implicit `CheckpointKind` rule shared by the encode
-/// validator and the decode reconstructor: index 0 → `Start`, last
-/// index → `End`, middle → `Split`. `SplitsState::step()` already
-/// hard-relies on this layout (a misplaced `Start` would clear
-/// `fired[]` mid-run; a `Split`/`End` at index 0 would never fire
-/// because `next_index = 0` at load), so dropping the discriminant
-/// from the wire form is a free byte saving rather than a relaxation
-/// of behavior.
-fn expected_kind(i: usize, n: usize) -> CheckpointKind {
-    if i == 0 {
-        CheckpointKind::Start
-    } else if i + 1 == n {
-        CheckpointKind::End
-    } else {
-        CheckpointKind::Split
-    }
-}
-
-impl Serialize for Track {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let n = self.checkpoints.len();
-        for (i, cp) in self.checkpoints.iter().enumerate() {
-            let expected = expected_kind(i, n);
-            if cp.kind != expected {
-                return Err(S::Error::custom(format!(
-                    "checkpoint[{i}] kind is {:?}, wire form requires {expected:?} \
-                     (position-implicit: index 0 = Start, last = End, middle = Split)",
-                    cp.kind
-                )));
-            }
-        }
-        let wires: Vec<WireCheckpoint> = self
-            .checkpoints
-            .iter()
-            .map(|cp| WireCheckpoint {
-                aabb: cp.aabb,
-                label: cp.label.clone(),
-            })
-            .collect();
-        (&self.name, &wires).serialize(s)
-    }
-}
-
-impl<'de> Deserialize<'de> for Track {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let (name, wires): (String, Vec<WireCheckpoint>) = Deserialize::deserialize(d)?;
-        let n = wires.len();
-        let checkpoints = wires
-            .into_iter()
-            .enumerate()
-            .map(|(i, w)| Checkpoint {
-                kind: expected_kind(i, n),
-                aabb: w.aabb,
-                label: w.label,
-            })
-            .collect();
-        Ok(Track { name, checkpoints })
-    }
-}
-
-impl Track {
-    /// Postcard-serialize, then zstd-compress at level 0. The output is
-    /// the canonical wire form shared between the chat-protocol path and
-    /// any future on-disk binary format.
-    pub fn encode_to_wire(&self) -> Result<Vec<u8>> {
-        let postcard_bytes = postcard::to_allocvec(self)?;
-        Ok(zstd::encode_all(&*postcard_bytes, 0)?)
-    }
-
-    /// Reverse of [`encode_to_wire`]. The zstd decode runs in streaming
-    /// mode with a [`MAX_DECOMPRESSED_BYTES`] cap so a hostile payload
-    /// can't trigger unbounded allocation before the postcard step.
-    pub fn decode_from_wire(wire: &[u8]) -> Result<Self> {
-        let mut decoder = zstd::stream::Decoder::new(wire)?;
-        let mut decompressed = Vec::new();
-        // Read one byte past the cap so we can distinguish "exactly at cap"
-        // (legitimate) from "would exceed cap" (bomb).
-        decoder
-            .by_ref()
-            .take(MAX_DECOMPRESSED_BYTES as u64 + 1)
-            .read_to_end(&mut decompressed)?;
-        ensure!(
-            decompressed.len() <= MAX_DECOMPRESSED_BYTES,
-            "decompressed track exceeds {MAX_DECOMPRESSED_BYTES}-byte cap"
-        );
-        Ok(postcard::from_bytes(&decompressed)?)
-    }
 }
 
 #[derive(Debug, Default)]
@@ -480,62 +359,18 @@ mod tests {
     }
 
     #[test]
-    fn track_round_trips_through_wire_with_implicit_kind() {
-        let original = linear_track();
-        let wire = original.encode_to_wire().unwrap();
-        let decoded = Track::decode_from_wire(&wire).unwrap();
-        assert_eq!(original, decoded);
+    fn aabb_wire_round_trip() {
+        let original = aabb((10.0, 20.0, 30.0), (15.0, 24.0, 32.0));
+        let (min, size) = aabb_to_min_size(original).unwrap();
+        assert_eq!(min, [10, 20, 30]);
+        assert_eq!(size, [5, 4, 2]);
+        let decoded = aabb_from_min_size(min, size);
+        assert_eq!(decoded, original);
     }
 
     #[test]
-    fn track_round_trips_two_checkpoint_track() {
-        let original = Track {
-            name: "minimal".into(),
-            checkpoints: vec![
-                cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
-                cp(CheckpointKind::End, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
-            ],
-        };
-        let wire = original.encode_to_wire().unwrap();
-        let decoded = Track::decode_from_wire(&wire).unwrap();
-        assert_eq!(original, decoded);
-    }
-
-    #[test]
-    fn track_serialize_rejects_misplaced_start() {
-        let bad = Track {
-            name: "bad".into(),
-            checkpoints: vec![
-                cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
-                cp(CheckpointKind::Start, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
-                cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
-            ],
-        };
-        assert!(bad.encode_to_wire().is_err());
-    }
-
-    #[test]
-    fn track_serialize_rejects_misplaced_end() {
-        let bad = Track {
-            name: "bad".into(),
-            checkpoints: vec![
-                cp(CheckpointKind::End, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
-                cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
-                cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
-            ],
-        };
-        assert!(bad.encode_to_wire().is_err());
-    }
-
-    #[test]
-    fn track_serialize_rejects_split_at_index_zero() {
-        let bad = Track {
-            name: "bad".into(),
-            checkpoints: vec![
-                cp(CheckpointKind::Split, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
-                cp(CheckpointKind::End, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
-            ],
-        };
-        assert!(bad.encode_to_wire().is_err());
+    fn aabb_wire_rejects_oversize_extent() {
+        let bad = aabb((0.0, 0.0, 0.0), (300.0, 1.0, 1.0));
+        assert!(aabb_to_min_size(bad).is_err());
     }
 }
