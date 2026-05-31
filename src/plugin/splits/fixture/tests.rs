@@ -14,6 +14,10 @@ fn loadtest_has_expected_kind_sequence() {
             CheckpointKind::Split,
             CheckpointKind::Split,
             CheckpointKind::Split,
+            CheckpointKind::Split,
+            CheckpointKind::Split,
+            CheckpointKind::Split,
+            CheckpointKind::Split,
             CheckpointKind::End,
         ]
     );
@@ -38,7 +42,10 @@ fn loadtest_has_map_loaded_trigger() {
             Trigger::Aabb { .. } => None,
         })
         .collect();
-    assert_eq!(map_triggers, vec!["spiralp+livesplit2", "main6"]);
+    assert_eq!(
+        map_triggers,
+        vec!["spiralp+livesplit2", "novacity", "main6"]
+    );
 }
 
 #[test]
@@ -49,15 +56,19 @@ fn loadtest_encodes_to_expected_wire_form() {
         lines,
         vec![
             "LS title Load Test",
-            "LS cp 0,0,0 2,4,2 Start CheckPoint",
-            "LS cp 10,0,0 2,4,2 Split A",
+            "LS cp 0,0,0 2,4,2 Start",
+            "LS cp 10,0,0 2,4,2 1 Split A",
             "LS cp 20,0,0 2,4,2",
-            "LS label Split B with a really really long descriptive label",
+            "LS label 1 Split B with a really long descriptive label",
+            "LS cp 30,0,0 2,4,2 1 Split C",
             "LS map spiralp+livesplit2",
             "LS label Map Name with a really really long descriptive label",
-            "LS cp 0,0,0 2,4,2 Split C",
-            "LS cp 10,0,0 2,4,2 Split D",
-            "LS cp 20,0,0 2,4,2 Split E",
+            "LS cp 0,0,0 2,4,2 2 Split A",
+            "LS cp 10,0,0 2,4,2 2 Split B",
+            "LS cp 20,0,0 2,4,2 2 Split C",
+            "LS cp 30,0,0 2,4,2 2 Split D",
+            "LS map novacity Nova City",
+            "LS cp 1905,40,844 1,2,1 Nova City Target",
             "LS map main6 Main Map",
             "LS end",
         ]
@@ -70,24 +81,23 @@ fn save_loadtest_as_lss() {
 
     use livesplit_core::{Run, Segment, run::saver::livesplit::save_run};
 
+    let track = loadtest();
+
     let mut run = Run::new();
     run.set_game_name("ClassiCube");
-    run.set_category_name("Load Test");
+    run.set_category_name(track.name.clone());
 
     // LiveSplit's segment list is everything after the implicit Start —
     // pressing Start is the timer-side action, not a named segment. So
     // the fixture's Start checkpoint doesn't get a Segment; the rest do.
-    let segment_names = [
-        "Split A",
-        "Split B with a really really long descriptive label",
-        "Map Name with a really really long descriptive label",
-        "Split C",
-        "Split D",
-        "Split E",
-        "Main Map",
-    ];
-    for name in segment_names {
-        run.push_segment(Segment::new(name));
+    let segment_names: Vec<&str> = track
+        .checkpoints
+        .iter()
+        .skip(1)
+        .map(|cp| cp.label.as_str())
+        .collect();
+    for name in &segment_names {
+        run.push_segment(Segment::new(*name));
     }
 
     let mut buf = String::new();
@@ -100,8 +110,8 @@ fn save_loadtest_as_lss() {
     assert!(buf.starts_with(r#"<?xml version="1.0" encoding="UTF-8"?>"#));
     assert!(buf.contains(r#"<Run version="1.8.0">"#));
     assert!(buf.contains("<GameName>ClassiCube</GameName>"));
-    assert!(buf.contains("<CategoryName>Load Test</CategoryName>"));
-    for name in segment_names {
+    assert!(buf.contains(&format!("<CategoryName>{}</CategoryName>", track.name)));
+    for name in &segment_names {
         assert!(
             buf.contains(&format!("<Name>{name}</Name>")),
             "missing segment <Name>{name}</Name> in:\n{buf}"
