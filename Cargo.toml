@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = { version = "=1.0.102", features = ["backtrace"] }
+arboard = { version = "=3.6.1", default-features = false, features = ["wayland-data-control"] }
 classicube-helpers = { git = "https://github.com/SpiralP/rust-classicube-helpers.git" }
 classicube-sys = "=6.0.4"
 futures-util = { version = "=0.3.32", default-features = false }

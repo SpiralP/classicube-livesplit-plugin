@@ -1,7 +1,7 @@
 use std::{cell::RefCell, os::raw::c_int, slice};
 
 use classicube_helpers::chat;
-use classicube_sys::{Clipboard_SetText, OwnedChatCommand, OwnedString, cc_string};
+use classicube_sys::{OwnedChatCommand, cc_string};
 use tracing::debug;
 
 use crate::{
@@ -18,6 +18,24 @@ use crate::{
 thread_local!(
     static COMMAND: RefCell<Option<OwnedChatCommand>> = const { RefCell::new(None) };
 );
+
+// `arboard::Clipboard` owns a daemon thread on Linux X11 that holds the
+// selection until another app takes ownership or the `Clipboard` is dropped.
+// Keep one alive across `nas` invocations so the copied text stays pasteable
+// after the chat command returns.
+thread_local!(
+    static CLIPBOARD: RefCell<Option<arboard::Clipboard>> = const { RefCell::new(None) };
+);
+
+fn clipboard_set_text(s: String) -> anyhow::Result<()> {
+    CLIPBOARD.with_borrow_mut(|slot| {
+        if slot.is_none() {
+            *slot = Some(arboard::Clipboard::new()?);
+        }
+        slot.as_mut().unwrap().set_text(s)?;
+        Ok(())
+    })
+}
 
 fn print_usage() {
     chat_print("&eUsage:");
@@ -181,13 +199,14 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                 let joined = lines.join("\n");
                 let cp_len = joined.chars().count();
                 let n = lines.len();
-                let owned = OwnedString::new(&joined);
-                unsafe {
-                    Clipboard_SetText(owned.as_cc_string());
+                match clipboard_set_text(joined) {
+                    Ok(()) => chat_print(&format!(
+                        "&aLiveSplit: copied NAS lines ({n} lines, {cp_len} cp total) to clipboard"
+                    )),
+                    Err(e) => {
+                        chat_print(&format!("&cLiveSplit: clipboard write failed: {e}"));
+                    }
                 }
-                chat_print(&format!(
-                    "&aLiveSplit: copied NAS lines ({n} lines, {cp_len} cp total) to clipboard"
-                ));
             }
         }
         _ => print_usage(),
@@ -235,7 +254,12 @@ impl CommandModule {
 }
 
 impl Module for CommandModule {
-    // No free(): dropping the OwnedChatCommand would free heap memory still
-    // referenced by ClassiCube's command list. The thread-local keeps it
-    // alive for the lifetime of the process; see init().
+    // The `COMMAND` thread-local is intentionally not dropped: that would
+    // free heap memory still referenced by ClassiCube's command list (see
+    // init()). The `CLIPBOARD` thread-local is fine to drop — clearing it
+    // shuts down arboard's Linux daemon thread so hot reload doesn't leak
+    // it across Init cycles.
+    fn free(&mut self) {
+        CLIPBOARD.with_borrow_mut(|c| *c = None);
+    }
 }
