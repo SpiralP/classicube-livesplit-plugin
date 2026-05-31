@@ -41,6 +41,26 @@ fn loadtest_has_map_loaded_trigger() {
 }
 
 #[test]
+fn loadtest_encodes_to_expected_wire_form() {
+    use crate::plugin::track_source::encode::encode_for_chat;
+    let lines = encode_for_chat(&loadtest()).unwrap();
+    assert_eq!(
+        lines,
+        vec![
+            "LS title Load Test",
+            "LS cp 0,0,0 2,4,2 Start CheckPoint",
+            "LS cp 10,0,0 2,4,2 Split A",
+            "LS cp 20,0,0 2,4,2 Split B",
+            "LS map mapname Map Name",
+            "LS cp 0,0,0 2,4,2 Split C",
+            "LS cp 10,0,0 2,4,2 Split D",
+            "LS cp 20,0,0 2,4,2 Split E",
+            "LS end",
+        ]
+    );
+}
+
+#[test]
 fn save_loadtest_as_lss() {
     use std::{env, fs};
 

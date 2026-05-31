@@ -285,7 +285,7 @@ fn rejects_end_at_non_last_index() {
 }
 
 #[test]
-fn map_only_two_checkpoint_emits_map_lines_and_end() {
+fn map_only_two_checkpoint_emits_inline_map_lines_and_end() {
     let track = Track {
         name: "M".into(),
         checkpoints: vec![
@@ -294,15 +294,13 @@ fn map_only_two_checkpoint_emits_map_lines_and_end() {
         ],
     };
     let lines = encode_for_chat(&track).unwrap();
-    // title + 2 cps × (map + label) + end
-    assert_eq!(lines.len(), 1 + 4 + 1);
+    // title + 2 inline map lines + end
+    assert_eq!(lines.len(), 4);
     assert_lines_within_cap(&lines);
     assert_eq!(lines[0], "LS title M");
-    assert_eq!(lines[1], "LS map spawn");
-    assert_eq!(lines[2], "LS label start");
-    assert_eq!(lines[3], "LS map goal");
-    assert_eq!(lines[4], "LS label end");
-    assert_eq!(lines[5], "LS end");
+    assert_eq!(lines[1], "LS map spawn start");
+    assert_eq!(lines[2], "LS map goal end");
+    assert_eq!(lines[3], "LS end");
 }
 
 #[test]
@@ -325,12 +323,34 @@ fn mixed_aabb_and_map_interleave() {
     assert_lines_within_cap(&lines);
     assert!(lines[0].starts_with("LS title "));
     assert!(lines[1].starts_with("LS cp "));
-    assert_eq!(lines[2], "LS map mid_map");
-    assert_eq!(lines[3], "LS label midmap");
-    assert!(lines[4].starts_with("LS cp "));
-    assert_eq!(lines[5], "LS map goal");
-    assert_eq!(lines[6], "LS label fin");
-    assert_eq!(lines[7], "LS end");
+    assert_eq!(lines[2], "LS map mid_map midmap");
+    assert!(lines[3].starts_with("LS cp "));
+    assert_eq!(lines[4], "LS map goal fin");
+    assert_eq!(lines[5], "LS end");
+}
+
+#[test]
+fn map_falls_back_to_separate_label_line_when_inline_overflows() {
+    // Inline `LS map <name> <label>` = 7 + name + 1 + label cp; cap 61.
+    // name=10 cp, label=50 cp → inline 68 cp (overflows), bare 17 cp
+    // (fits), follow-up 59 cp (fits).
+    let label = "x".repeat(50);
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp_map(CheckpointKind::Start, "shortmap_a", &label),
+            cp_map(CheckpointKind::End, "goal", "fin"),
+        ],
+    };
+    let lines = encode_for_chat(&track).unwrap();
+    // title + (map bare + label) + map inline + end
+    assert_eq!(lines.len(), 1 + 2 + 1 + 1);
+    assert_eq!(lines[0], "LS title T");
+    assert_eq!(lines[1], "LS map shortmap_a");
+    assert_eq!(lines[2], format!("LS label {label}"));
+    assert_eq!(lines[3], "LS map goal fin");
+    assert_eq!(lines[4], "LS end");
+    assert_lines_within_cap(&lines);
 }
 
 #[test]
@@ -346,8 +366,20 @@ fn rejects_empty_map_name() {
 }
 
 #[test]
+fn rejects_map_name_with_space() {
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp_map(CheckpointKind::Start, "Castle Lobby", "spawn"),
+            cp_map(CheckpointKind::End, "goal", "end"),
+        ],
+    };
+    assert!(encode_for_chat(&track).is_err());
+}
+
+#[test]
 fn rejects_overlong_map_name() {
-    // "LS map " is 7 cp; cap 61 → name > 54 cp overflows.
+    // "LS map " is 7 cp; cap 61 → name > 54 cp overflows even bare.
     let track = Track {
         name: "T".into(),
         checkpoints: vec![

@@ -20,12 +20,14 @@ pub(crate) const MAX_LINE_CP: usize = 64 - 3;
 /// Layout:
 ///   line[0]    = `LS title <name>`
 ///   line[1..n] = per checkpoint, in order. AABB checkpoints emit
-///                `LS cp <min> <size> [label]`, optionally followed
-///                by `LS label <text>` if the label overflowed
-///                inline. Map-loaded checkpoints emit `LS map <name>`
-///                bare, always followed by `LS label <text>` (the
-///                `<name>` slot consumes to end-of-line, leaving no
-///                inline label slot).
+///                `LS cp <min> <size> [label]`; map-loaded checkpoints
+///                emit `LS map <name> [label]`. Either form carries
+///                the label inline when it fits, otherwise the kind
+///                line is emitted bare and followed by
+///                `LS label <text>`. Map names cannot contain a
+///                space (the first space delimits name from label);
+///                the encoder errors if the runtime `MapLoaded(name)`
+///                contains one.
 ///   line[n+1]  = `LS end` terminator. The receiver promotes the
 ///                last buffered checkpoint's kind from `Split` to
 ///                `End` on this line.
@@ -102,13 +104,26 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
             }
             Trigger::MapLoaded(name) => {
                 ensure!(!name.trim().is_empty(), "checkpoint[{i}] map name is empty");
-                let map_line = format!("LS map {name}");
-                let map_cp = map_line.chars().count();
                 ensure!(
-                    map_cp <= MAX_LINE_CP,
-                    "checkpoint[{i}] `map` line is {map_cp} cp; cap is {MAX_LINE_CP}"
+                    !name.contains(' '),
+                    "checkpoint[{i}] map name `{name}` contains a space; map names on the wire \
+                     cannot contain spaces (the space delimits name from label)"
                 );
-                lines.push(map_line);
+
+                let inline = format!("LS map {name} {}", cp.label);
+                if inline.chars().count() <= MAX_LINE_CP {
+                    lines.push(inline);
+                    continue;
+                }
+
+                let bare = format!("LS map {name}");
+                let bare_cp = bare.chars().count();
+                ensure!(
+                    bare_cp <= MAX_LINE_CP,
+                    "checkpoint[{i}] `map` line without label is {bare_cp} cp; cap is \
+                     {MAX_LINE_CP}"
+                );
+                lines.push(bare);
 
                 let label_line = format!("LS label {}", cp.label);
                 let label_cp = label_line.chars().count();

@@ -602,17 +602,80 @@ fn empty_map_name_errors() {
 }
 
 #[test]
-fn map_name_preserves_spaces() {
+fn inline_map_label_round_trip() {
     let _g = fresh();
-    let track = Track {
+    // Decoder accepts `LS map <name> <label>` inline (the encoder
+    // emits this form when it fits the per-line cap).
+    let lines = [
+        "LS title T",
+        "LS map spawn start",
+        "LS map goal end",
+        "LS end",
+    ];
+    for line in &lines[..lines.len() - 1] {
+        assert_buffered(feed_chat_line(line));
+    }
+    let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+    let expected = Track {
         name: "T".into(),
         checkpoints: vec![
-            cp_map(CheckpointKind::Start, "Castle Lobby", "spawn"),
-            cp_map(CheckpointKind::End, "Final Room", "done"),
+            cp_map(CheckpointKind::Start, "spawn", "start"),
+            cp_map(CheckpointKind::End, "goal", "end"),
         ],
     };
-    let lines = encode_for_chat(&track).unwrap();
-    feed_all_but_last(&lines);
+    assert_eq!(decoded, expected);
+}
+
+#[test]
+fn map_inline_label_preserves_multi_space() {
+    let _g = fresh();
+    // Only the first space delimits name from label; subsequent
+    // whitespace is part of the label verbatim.
+    let lines = [
+        "LS title T",
+        "LS map spawn  start  pad ",
+        "LS map goal end",
+        "LS end",
+    ];
+    for line in &lines[..lines.len() - 1] {
+        assert_buffered(feed_chat_line(line));
+    }
     let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
-    assert_eq!(decoded, track);
+    assert_eq!(decoded.checkpoints[0].label, " start  pad ");
+}
+
+#[test]
+fn map_followup_label_round_trip() {
+    let _g = fresh();
+    // The bare `LS map <name>` + follow-up `LS label <text>` form is
+    // what the encoder emits when the inline form overflows the cap.
+    let lines = [
+        "LS title T",
+        "LS map spawn",
+        "LS label first checkpoint",
+        "LS map goal end",
+        "LS end",
+    ];
+    for line in &lines[..lines.len() - 1] {
+        assert_buffered(feed_chat_line(line));
+    }
+    let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+    let expected = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp_map(CheckpointKind::Start, "spawn", "first checkpoint"),
+            cp_map(CheckpointKind::End, "goal", "end"),
+        ],
+    };
+    assert_eq!(decoded, expected);
+}
+
+#[test]
+fn map_inline_empty_label_errors() {
+    let _g = fresh();
+    assert_buffered(feed_chat_line("LS title T"));
+    // Trailing space after map name with no label text → mirrors the
+    // `LS cp` empty-inline-label error.
+    let m = assert_parse_error(feed_chat_line("LS map spawn "));
+    assert!(m.contains("inline label is empty"), "{m}");
 }

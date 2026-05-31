@@ -83,7 +83,7 @@ pub fn feed_chat_line(text: &str) -> FrameOutcome {
         "title" => parse_title(rest),
         "label" => parse_label(rest),
         "cp" => parse_checkpoint(rest).map(|(aabb, label)| Line::Cp { aabb, label }),
-        "map" => parse_consume_to_eol(rest, "map name").map(|name| Line::Map { name }),
+        "map" => parse_map(rest),
         "end" => parse_end(rest),
         other => Err(format!("unknown keyword `{other}`")),
     };
@@ -102,20 +102,39 @@ pub fn feed_chat_line(text: &str) -> FrameOutcome {
 enum Line {
     Title { name: String },
     Cp { aabb: Aabb, label: Option<String> },
-    Map { name: String },
+    Map { name: String, label: Option<String> },
     End,
     Label { text: String },
 }
 
 fn parse_title(rest: &str) -> Result<Line, String> {
-    parse_consume_to_eol(rest, "title name").map(|name| Line::Title { name })
+    if rest.trim().is_empty() {
+        return Err("title name is empty".to_string());
+    }
+    Ok(Line::Title {
+        name: rest.to_string(),
+    })
 }
 
-fn parse_consume_to_eol(rest: &str, what: &str) -> Result<String, String> {
+fn parse_map(rest: &str) -> Result<Line, String> {
     if rest.trim().is_empty() {
-        return Err(format!("{what} is empty"));
+        return Err("map name is empty".to_string());
     }
-    Ok(rest.to_string())
+    let mut parts = rest.splitn(2, ' ');
+    let name = parts.next().expect("splitn yields >= 1 part").to_string();
+    if name.is_empty() {
+        return Err("map name is empty".to_string());
+    }
+    let label = match parts.next() {
+        Some(s) => {
+            if s.trim().is_empty() {
+                return Err("inline label is empty".to_string());
+            }
+            Some(s.to_string())
+        }
+        None => None,
+    };
+    Ok(Line::Map { name, label })
 }
 
 fn parse_label(rest: &str) -> Result<Line, String> {
@@ -231,17 +250,30 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                 FrameOutcome::Buffered
             }
         },
-        (State::NeedFirst { name }, Line::Map { name: map }) => {
-            *state = State::NeedLabel {
-                name,
-                slots: vec![Checkpoint {
-                    kind: CheckpointKind::Start,
-                    trigger: Trigger::MapLoaded(map),
-                    label: String::new(),
-                }],
-            };
-            FrameOutcome::Buffered
-        }
+        (State::NeedFirst { name }, Line::Map { name: map, label }) => match label {
+            Some(label) => {
+                *state = State::NeedNext {
+                    name,
+                    slots: vec![Checkpoint {
+                        kind: CheckpointKind::Start,
+                        trigger: Trigger::MapLoaded(map),
+                        label,
+                    }],
+                };
+                FrameOutcome::Buffered
+            }
+            None => {
+                *state = State::NeedLabel {
+                    name,
+                    slots: vec![Checkpoint {
+                        kind: CheckpointKind::Start,
+                        trigger: Trigger::MapLoaded(map),
+                        label: String::new(),
+                    }],
+                };
+                FrameOutcome::Buffered
+            }
+        },
         (State::NeedNext { name, mut slots }, Line::Cp { aabb, label }) => match label {
             Some(label) => {
                 slots.push(Checkpoint {
@@ -262,15 +294,26 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                 FrameOutcome::Buffered
             }
         },
-        (State::NeedNext { name, mut slots }, Line::Map { name: map }) => {
-            slots.push(Checkpoint {
-                kind: CheckpointKind::Split,
-                trigger: Trigger::MapLoaded(map),
-                label: String::new(),
-            });
-            *state = State::NeedLabel { name, slots };
-            FrameOutcome::Buffered
-        }
+        (State::NeedNext { name, mut slots }, Line::Map { name: map, label }) => match label {
+            Some(label) => {
+                slots.push(Checkpoint {
+                    kind: CheckpointKind::Split,
+                    trigger: Trigger::MapLoaded(map),
+                    label,
+                });
+                *state = State::NeedNext { name, slots };
+                FrameOutcome::Buffered
+            }
+            None => {
+                slots.push(Checkpoint {
+                    kind: CheckpointKind::Split,
+                    trigger: Trigger::MapLoaded(map),
+                    label: String::new(),
+                });
+                *state = State::NeedLabel { name, slots };
+                FrameOutcome::Buffered
+            }
+        },
         (State::NeedNext { name, mut slots }, Line::End) => {
             if slots.len() < 2 {
                 *state = State::NeedNext { name, slots };
