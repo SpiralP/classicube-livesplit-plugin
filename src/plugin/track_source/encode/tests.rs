@@ -68,17 +68,19 @@ fn assert_lines_within_cap(lines: &[String]) {
 fn loadtest_round_trip_all_inline() {
     let track = loadtest_track();
     let lines = encode_for_chat(&track).unwrap();
-    assert_eq!(lines.len(), 1 + 4);
+    // title + 4 cps (each inline) + end
+    assert_eq!(lines.len(), 1 + 4 + 1);
     assert_lines_within_cap(&lines);
     assert!(lines[0].starts_with("LS title "));
-    assert!(lines[1].starts_with("LS start "));
+    assert!(lines[1].starts_with("LS cp "));
     assert!(lines[2].starts_with("LS cp "));
     assert!(lines[3].starts_with("LS cp "));
-    assert!(lines[4].starts_with("LS endcp "));
+    assert!(lines[4].starts_with("LS cp "));
+    assert_eq!(lines[5], "LS end");
 }
 
 #[test]
-fn two_checkpoint_round_trip_has_three_lines() {
+fn two_checkpoint_round_trip_has_four_lines() {
     let track = Track {
         name: "T".into(),
         checkpoints: vec![
@@ -87,8 +89,10 @@ fn two_checkpoint_round_trip_has_three_lines() {
         ],
     };
     let lines = encode_for_chat(&track).unwrap();
-    assert_eq!(lines.len(), 3);
+    // title + 2 cps (inline) + end
+    assert_eq!(lines.len(), 4);
     assert_lines_within_cap(&lines);
+    assert_eq!(lines.last().unwrap(), "LS end");
 }
 
 #[test]
@@ -163,8 +167,8 @@ fn rejects_label_too_long_even_standalone() {
 
 #[test]
 fn falls_back_to_separate_label_line_when_inline_overflows() {
-    // Inline `LS start 0,0,0 2,4,2 <label>` = 21 + label cp; cap 61
-    // → label needs > 40 cp to overflow inline but ≤ 52 cp to fit
+    // Inline `LS cp 0,0,0 2,4,2 <label>` = 18 + label cp; cap 61
+    // → label needs > 43 cp to overflow inline but ≤ 52 cp to fit
     // standalone. 45 cp lands in that range.
     let label = "x".repeat(45);
     let track = Track {
@@ -180,9 +184,11 @@ fn falls_back_to_separate_label_line_when_inline_overflows() {
         ],
     };
     let lines = encode_for_chat(&track).unwrap();
-    assert_eq!(lines.len(), 1 + 2 + 1);
-    assert!(lines[1].starts_with("LS start ") && !lines[1].ends_with(&label));
+    // title + (cp + label) + cp + end
+    assert_eq!(lines.len(), 1 + 2 + 1 + 1);
+    assert!(lines[1].starts_with("LS cp ") && !lines[1].ends_with(&label));
     assert_eq!(lines[2], format!("LS label {label}"));
+    assert_eq!(lines.last().unwrap(), "LS end");
     assert_lines_within_cap(&lines);
 }
 
@@ -279,7 +285,7 @@ fn rejects_end_at_non_last_index() {
 }
 
 #[test]
-fn map_only_two_checkpoint_emits_map_and_endmap() {
+fn map_only_two_checkpoint_emits_map_lines_and_end() {
     let track = Track {
         name: "M".into(),
         checkpoints: vec![
@@ -288,13 +294,15 @@ fn map_only_two_checkpoint_emits_map_and_endmap() {
         ],
     };
     let lines = encode_for_chat(&track).unwrap();
-    assert_eq!(lines.len(), 1 + 2 + 2, "title + 2 cps × (kw + label)");
+    // title + 2 cps × (map + label) + end
+    assert_eq!(lines.len(), 1 + 4 + 1);
     assert_lines_within_cap(&lines);
     assert_eq!(lines[0], "LS title M");
     assert_eq!(lines[1], "LS map spawn");
     assert_eq!(lines[2], "LS label start");
-    assert_eq!(lines[3], "LS endmap goal");
+    assert_eq!(lines[3], "LS map goal");
     assert_eq!(lines[4], "LS label end");
+    assert_eq!(lines[5], "LS end");
 }
 
 #[test]
@@ -316,12 +324,13 @@ fn mixed_aabb_and_map_interleave() {
     let lines = encode_for_chat(&track).unwrap();
     assert_lines_within_cap(&lines);
     assert!(lines[0].starts_with("LS title "));
-    assert!(lines[1].starts_with("LS start "));
+    assert!(lines[1].starts_with("LS cp "));
     assert_eq!(lines[2], "LS map mid_map");
     assert_eq!(lines[3], "LS label midmap");
     assert!(lines[4].starts_with("LS cp "));
-    assert_eq!(lines[5], "LS endmap goal");
+    assert_eq!(lines[5], "LS map goal");
     assert_eq!(lines[6], "LS label fin");
+    assert_eq!(lines[7], "LS end");
 }
 
 #[test]
@@ -344,19 +353,6 @@ fn rejects_overlong_map_name() {
         checkpoints: vec![
             cp_map(CheckpointKind::Start, &"x".repeat(55), "s"),
             cp_map(CheckpointKind::End, "goal", "e"),
-        ],
-    };
-    assert!(encode_for_chat(&track).is_err());
-}
-
-#[test]
-fn rejects_overlong_endmap_name() {
-    // "LS endmap " is 10 cp; cap 61 → name > 51 cp overflows.
-    let track = Track {
-        name: "T".into(),
-        checkpoints: vec![
-            cp_map(CheckpointKind::Start, "spawn", "s"),
-            cp_map(CheckpointKind::End, &"y".repeat(52), "e"),
         ],
     };
     assert!(encode_for_chat(&track).is_err());

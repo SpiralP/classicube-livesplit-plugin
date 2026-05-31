@@ -18,14 +18,17 @@ pub(crate) const MAX_LINE_CP: usize = 64 - 3;
 /// into a single block via the `mb` arm of the command module.
 ///
 /// Layout:
-///   line[0]   = `LS title <name>`
-///   line[1..] = per checkpoint, in order. AABB checkpoints emit
-///               `LS start|cp|endcp <min> <size> [label]`, optionally
-///               followed by `LS label <text>` if the label overflowed
-///               inline. Map-loaded checkpoints emit
-///               `LS map|endmap <name>` bare, always followed by
-///               `LS label <text>` (the `<name>` slot consumes to
-///               end-of-line, leaving no inline label slot).
+///   line[0]    = `LS title <name>`
+///   line[1..n] = per checkpoint, in order. AABB checkpoints emit
+///                `LS cp <min> <size> [label]`, optionally followed
+///                by `LS label <text>` if the label overflowed
+///                inline. Map-loaded checkpoints emit `LS map <name>`
+///                bare, always followed by `LS label <text>` (the
+///                `<name>` slot consumes to end-of-line, leaving no
+///                inline label slot).
+///   line[n+1]  = `LS end` terminator. The receiver promotes the
+///                last buffered checkpoint's kind from `Split` to
+///                `End` on this line.
 pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
     let n = track.checkpoints.len();
     ensure!(
@@ -55,7 +58,7 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
         );
     }
 
-    let mut lines = Vec::with_capacity(1 + n);
+    let mut lines = Vec::with_capacity(2 + n);
 
     let title = format!("LS title {}", track.name);
     let title_cp = title.chars().count();
@@ -68,33 +71,23 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
     for (i, cp) in track.checkpoints.iter().enumerate() {
         match &cp.trigger {
             Trigger::Aabb(aabb) => {
-                let kw = match cp.kind {
-                    CheckpointKind::Start => "start",
-                    CheckpointKind::Split => "cp",
-                    CheckpointKind::End => "endcp",
-                };
                 let (min, size) = aabb_to_min_size(*aabb)?;
                 let coords = format!(
                     "{},{},{} {},{},{}",
                     min[0], min[1], min[2], size[0], size[1], size[2]
                 );
 
-                let inline = if cp.label.is_empty() {
-                    format!("LS {kw} {coords}")
-                } else {
-                    format!("LS {kw} {coords} {}", cp.label)
-                };
+                let inline = format!("LS cp {coords} {}", cp.label);
                 if inline.chars().count() <= MAX_LINE_CP {
                     lines.push(inline);
                     continue;
                 }
 
-                let bare = format!("LS {kw} {coords}");
+                let bare = format!("LS cp {coords}");
                 let bare_cp = bare.chars().count();
                 ensure!(
                     bare_cp <= MAX_LINE_CP,
-                    "checkpoint[{i}] `{kw}` line without label is {bare_cp} cp; cap is \
-                     {MAX_LINE_CP}"
+                    "checkpoint[{i}] `cp` line without label is {bare_cp} cp; cap is {MAX_LINE_CP}"
                 );
                 lines.push(bare);
 
@@ -109,15 +102,11 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
             }
             Trigger::MapLoaded(name) => {
                 ensure!(!name.trim().is_empty(), "checkpoint[{i}] map name is empty");
-                let kw = match cp.kind {
-                    CheckpointKind::Start | CheckpointKind::Split => "map",
-                    CheckpointKind::End => "endmap",
-                };
-                let map_line = format!("LS {kw} {name}");
+                let map_line = format!("LS map {name}");
                 let map_cp = map_line.chars().count();
                 ensure!(
                     map_cp <= MAX_LINE_CP,
-                    "checkpoint[{i}] `{kw}` line is {map_cp} cp; cap is {MAX_LINE_CP}"
+                    "checkpoint[{i}] `map` line is {map_cp} cp; cap is {MAX_LINE_CP}"
                 );
                 lines.push(map_line);
 
@@ -132,6 +121,8 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
             }
         }
     }
+
+    lines.push("LS end".to_string());
 
     for (i, line) in lines.iter().enumerate() {
         let cp_len = line.chars().count();

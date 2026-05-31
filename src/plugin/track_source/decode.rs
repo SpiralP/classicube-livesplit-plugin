@@ -25,12 +25,14 @@ pub enum FrameOutcome {
 #[derive(Debug)]
 enum State {
     Idle,
-    NeedStart {
+    /// `LS title` accepted; next valid line is `cp` or `map` (which
+    /// becomes the Start-kind checkpoint).
+    NeedFirst {
         name: String,
     },
-    /// At least Start is in `slots`; the most recent checkpoint already
-    /// has its label populated. Next line is `cp` / `endcp` / `map` /
-    /// `endmap` / `title`.
+    /// At least one checkpoint is in `slots`; the most recent one
+    /// already has its label populated. Next line is `cp` / `map` /
+    /// `end` / `title`.
     NeedNext {
         name: String,
         slots: Vec<Checkpoint>,
@@ -40,19 +42,7 @@ enum State {
     NeedLabel {
         name: String,
         slots: Vec<Checkpoint>,
-        awaiting_kind: CheckpointKind,
     },
-}
-
-impl State {
-    fn label(&self) -> &'static str {
-        match self {
-            State::Idle => "Idle",
-            State::NeedStart { .. } => "NeedStart",
-            State::NeedNext { .. } => "NeedNext",
-            State::NeedLabel { .. } => "NeedLabel",
-        }
-    }
 }
 
 thread_local! {
@@ -92,11 +82,9 @@ pub fn feed_chat_line(text: &str) -> FrameOutcome {
     let parsed = match keyword {
         "title" => parse_title(rest),
         "label" => parse_label(rest),
-        "start" => parse_checkpoint(rest).map(|(aabb, label)| Line::Start { aabb, label }),
         "cp" => parse_checkpoint(rest).map(|(aabb, label)| Line::Cp { aabb, label }),
-        "endcp" => parse_checkpoint(rest).map(|(aabb, label)| Line::End { aabb, label }),
         "map" => parse_consume_to_eol(rest, "map name").map(|name| Line::Map { name }),
-        "endmap" => parse_consume_to_eol(rest, "endmap name").map(|name| Line::EndMap { name }),
+        "end" => parse_end(rest),
         other => Err(format!("unknown keyword `{other}`")),
     };
 
@@ -113,11 +101,9 @@ pub fn feed_chat_line(text: &str) -> FrameOutcome {
 
 enum Line {
     Title { name: String },
-    Start { aabb: Aabb, label: Option<String> },
     Cp { aabb: Aabb, label: Option<String> },
-    End { aabb: Aabb, label: Option<String> },
     Map { name: String },
-    EndMap { name: String },
+    End,
     Label { text: String },
 }
 
@@ -139,6 +125,13 @@ fn parse_label(rest: &str) -> Result<Line, String> {
     Ok(Line::Label {
         text: rest.to_string(),
     })
+}
+
+fn parse_end(rest: &str) -> Result<Line, String> {
+    if !rest.is_empty() {
+        return Err(format!("`LS end` takes no arguments, got `{rest}`"));
+    }
+    Ok(Line::End)
 }
 
 fn parse_checkpoint(rest: &str) -> Result<(Aabb, Option<String>), String> {
@@ -207,15 +200,14 @@ fn parse_u8_triple(s: &str) -> Result<[u8; 3], String> {
 fn transition(state: &mut State, line: Line) -> FrameOutcome {
     // `LS title` is the universal reset from any state.
     if let Line::Title { name } = line {
-        *state = State::NeedStart { name };
+        *state = State::NeedFirst { name };
         return FrameOutcome::Buffered;
     }
 
-    let prev_label = state.label();
     let taken = mem::replace(state, State::Idle);
 
     match (taken, line) {
-        (State::NeedStart { name }, Line::Start { aabb, label }) => match label {
+        (State::NeedFirst { name }, Line::Cp { aabb, label }) => match label {
             Some(label) => {
                 *state = State::NeedNext {
                     name,
@@ -235,12 +227,11 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                         trigger: Trigger::Aabb(aabb),
                         label: String::new(),
                     }],
-                    awaiting_kind: CheckpointKind::Start,
                 };
                 FrameOutcome::Buffered
             }
         },
-        (State::NeedStart { name }, Line::Map { name: map }) => {
+        (State::NeedFirst { name }, Line::Map { name: map }) => {
             *state = State::NeedLabel {
                 name,
                 slots: vec![Checkpoint {
@@ -248,7 +239,6 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                     trigger: Trigger::MapLoaded(map),
                     label: String::new(),
                 }],
-                awaiting_kind: CheckpointKind::Start,
             };
             FrameOutcome::Buffered
         }
@@ -268,11 +258,7 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                     trigger: Trigger::Aabb(aabb),
                     label: String::new(),
                 });
-                *state = State::NeedLabel {
-                    name,
-                    slots,
-                    awaiting_kind: CheckpointKind::Split,
-                };
+                *state = State::NeedLabel { name, slots };
                 FrameOutcome::Buffered
             }
         },
@@ -282,108 +268,50 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                 trigger: Trigger::MapLoaded(map),
                 label: String::new(),
             });
-            *state = State::NeedLabel {
-                name,
-                slots,
-                awaiting_kind: CheckpointKind::Split,
-            };
+            *state = State::NeedLabel { name, slots };
             FrameOutcome::Buffered
         }
-        (State::NeedNext { name, mut slots }, Line::End { aabb, label }) => match label {
-            Some(label) => {
-                slots.push(Checkpoint {
-                    kind: CheckpointKind::End,
-                    trigger: Trigger::Aabb(aabb),
-                    label,
-                });
-                let track = Track {
-                    name,
-                    checkpoints: slots,
-                };
-                FrameOutcome::Loaded(track)
+        (State::NeedNext { name, mut slots }, Line::End) => {
+            if slots.len() < 2 {
+                *state = State::NeedNext { name, slots };
+                return FrameOutcome::ParseError(
+                    "track needs at least 2 checkpoints before `LS end`".to_string(),
+                );
             }
-            None => {
-                slots.push(Checkpoint {
-                    kind: CheckpointKind::End,
-                    trigger: Trigger::Aabb(aabb),
-                    label: String::new(),
-                });
-                *state = State::NeedLabel {
-                    name,
-                    slots,
-                    awaiting_kind: CheckpointKind::End,
-                };
-                FrameOutcome::Buffered
-            }
-        },
-        (State::NeedNext { name, mut slots }, Line::EndMap { name: map }) => {
-            slots.push(Checkpoint {
-                kind: CheckpointKind::End,
-                trigger: Trigger::MapLoaded(map),
-                label: String::new(),
-            });
-            *state = State::NeedLabel {
+            slots.last_mut().expect("len >= 2 above").kind = CheckpointKind::End;
+            FrameOutcome::Loaded(Track {
                 name,
-                slots,
-                awaiting_kind: CheckpointKind::End,
-            };
-            FrameOutcome::Buffered
+                checkpoints: slots,
+            })
         }
-        (
-            State::NeedLabel {
-                name,
-                mut slots,
-                awaiting_kind,
-            },
-            Line::Label { text },
-        ) => {
+        (State::NeedLabel { name, mut slots }, Line::Label { text }) => {
             let last = slots
                 .last_mut()
                 .expect("NeedLabel always has at least one slot");
             last.label = text;
-            match awaiting_kind {
-                CheckpointKind::End => {
-                    let track = Track {
-                        name,
-                        checkpoints: slots,
-                    };
-                    FrameOutcome::Loaded(track)
-                }
-                CheckpointKind::Start | CheckpointKind::Split => {
-                    *state = State::NeedNext { name, slots };
-                    FrameOutcome::Buffered
-                }
-            }
+            *state = State::NeedNext { name, slots };
+            FrameOutcome::Buffered
         }
 
         // --- ParseError fall-throughs ---
-        (taken, Line::Start { .. }) => {
-            *state = taken;
-            FrameOutcome::ParseError(format!("unexpected `start`, state is `{prev_label}`"))
-        }
-        (taken @ (State::Idle | State::NeedStart { .. }), Line::Cp { .. } | Line::End { .. }) => {
-            *state = taken;
-            FrameOutcome::ParseError("no `LS start` yet".to_string())
-        }
-        (taken @ State::NeedLabel { .. }, Line::Cp { .. } | Line::End { .. }) => {
-            *state = taken;
-            FrameOutcome::ParseError("previous checkpoint not yet labeled".to_string())
-        }
-        (taken @ State::Idle, Line::Map { .. } | Line::EndMap { .. }) => {
+        (
+            taken @ State::Idle,
+            Line::Cp { .. } | Line::Map { .. } | Line::End | Line::Label { .. },
+        ) => {
             *state = taken;
             FrameOutcome::ParseError("no `LS title` yet".to_string())
         }
-        (taken @ State::NeedStart { .. }, Line::EndMap { .. }) => {
+        (taken @ State::NeedFirst { .. }, Line::End) => {
             *state = taken;
-            FrameOutcome::ParseError("no checkpoints before `endmap`".to_string())
+            FrameOutcome::ParseError("no checkpoints before `LS end`".to_string())
         }
-        (taken @ State::NeedLabel { .. }, Line::Map { .. } | Line::EndMap { .. }) => {
-            *state = taken;
-            FrameOutcome::ParseError("previous checkpoint not yet labeled".to_string())
-        }
-        (taken @ (State::Idle | State::NeedStart { .. }), Line::Label { .. }) => {
+        (taken @ State::NeedFirst { .. }, Line::Label { .. }) => {
             *state = taken;
             FrameOutcome::ParseError("no checkpoint to label".to_string())
+        }
+        (taken @ State::NeedLabel { .. }, Line::Cp { .. } | Line::Map { .. } | Line::End) => {
+            *state = taken;
+            FrameOutcome::ParseError("previous checkpoint not yet labeled".to_string())
         }
         (taken @ State::NeedNext { .. }, Line::Label { .. }) => {
             *state = taken;

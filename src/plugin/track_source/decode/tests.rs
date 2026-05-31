@@ -171,43 +171,24 @@ fn unknown_keyword_errors() {
 }
 
 #[test]
-fn start_before_title_errors() {
-    let _g = fresh();
-    let m = assert_parse_error(feed_chat_line("LS start 0,0,0 1,1,1 label"));
-    assert!(
-        m.contains("unexpected `start`"),
-        "expected state-mismatch, got: {m}"
-    );
-}
-
-#[test]
-fn cp_before_start_errors() {
+fn cp_before_title_errors() {
     let _g = fresh();
     let m = assert_parse_error(feed_chat_line("LS cp 0,0,0 1,1,1 label"));
-    assert!(m.contains("no `LS start`"), "{m}");
+    assert!(m.contains("no `LS title`"), "{m}");
 }
 
 #[test]
-fn end_before_start_errors() {
+fn end_before_title_errors() {
     let _g = fresh();
-    let m = assert_parse_error(feed_chat_line("LS endcp 0,0,0 1,1,1 label"));
-    assert!(m.contains("no `LS start`"), "{m}");
-}
-
-#[test]
-fn second_start_errors() {
-    let _g = fresh();
-    assert_buffered(feed_chat_line("LS title T"));
-    assert_buffered(feed_chat_line("LS start 0,0,0 1,1,1 start"));
-    let m = assert_parse_error(feed_chat_line("LS start 0,0,0 1,1,1 second"));
-    assert!(m.contains("unexpected `start`"), "{m}");
+    let m = assert_parse_error(feed_chat_line("LS end"));
+    assert!(m.contains("no `LS title`"), "{m}");
 }
 
 #[test]
 fn cp_in_need_label_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    assert_buffered(feed_chat_line("LS start 0,0,0 1,1,1")); // no inline label
+    assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1")); // no inline label
     let m = assert_parse_error(feed_chat_line("LS cp 10,0,0 1,1,1 mid"));
     assert!(m.contains("not yet labeled"), "{m}");
 }
@@ -216,8 +197,8 @@ fn cp_in_need_label_errors() {
 fn end_in_need_label_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    assert_buffered(feed_chat_line("LS start 0,0,0 1,1,1"));
-    let m = assert_parse_error(feed_chat_line("LS endcp 10,0,0 1,1,1 end"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1"));
+    let m = assert_parse_error(feed_chat_line("LS end"));
     assert!(m.contains("not yet labeled"), "{m}");
 }
 
@@ -225,11 +206,11 @@ fn end_in_need_label_errors() {
 fn label_in_idle_errors() {
     let _g = fresh();
     let m = assert_parse_error(feed_chat_line("LS label some text"));
-    assert!(m.contains("no checkpoint to label"), "{m}");
+    assert!(m.contains("no `LS title`"), "{m}");
 }
 
 #[test]
-fn label_in_need_start_errors() {
+fn label_in_need_first_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
     let m = assert_parse_error(feed_chat_line("LS label premature"));
@@ -240,7 +221,7 @@ fn label_in_need_start_errors() {
 fn label_after_inline_label_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    assert_buffered(feed_chat_line("LS start 0,0,0 1,1,1 inline"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1 inline"));
     let m = assert_parse_error(feed_chat_line("LS label extra"));
     assert!(m.contains("already has a label"), "{m}");
 }
@@ -264,7 +245,7 @@ fn whitespace_inline_label_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
     // Trailing space after size triple, then empty (all-whitespace) label.
-    let m = assert_parse_error(feed_chat_line("LS start 100,64,200 1,1,1 "));
+    let m = assert_parse_error(feed_chat_line("LS cp 100,64,200 1,1,1 "));
     assert!(m.contains("inline label is empty"), "{m}");
 }
 
@@ -272,7 +253,7 @@ fn whitespace_inline_label_errors() {
 fn whitespace_only_label_text_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    assert_buffered(feed_chat_line("LS start 0,0,0 1,1,1"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1"));
     let m = assert_parse_error(feed_chat_line("LS label    "));
     assert!(m.contains("label text is empty"), "{m}");
 }
@@ -281,7 +262,7 @@ fn whitespace_only_label_text_errors() {
 fn non_numeric_coord_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    let m = assert_parse_error(feed_chat_line("LS start abc,def,ghi 1,1,1"));
+    let m = assert_parse_error(feed_chat_line("LS cp abc,def,ghi 1,1,1"));
     assert!(m.contains("min"), "{m}");
 }
 
@@ -289,7 +270,7 @@ fn non_numeric_coord_errors() {
 fn wrong_size_arity_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    let m = assert_parse_error(feed_chat_line("LS start 100,64,200 4,4"));
+    let m = assert_parse_error(feed_chat_line("LS cp 100,64,200 4,4"));
     assert!(m.contains("3 comma-separated size"), "{m}");
 }
 
@@ -297,7 +278,7 @@ fn wrong_size_arity_errors() {
 fn wrong_min_arity_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    let m = assert_parse_error(feed_chat_line("LS start 100,64,200,extra 4,4,4"));
+    let m = assert_parse_error(feed_chat_line("LS cp 100,64,200,extra 4,4,4"));
     assert!(m.contains("3 comma-separated min"), "{m}");
 }
 
@@ -306,7 +287,7 @@ fn missing_comma_wrong_shape_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
     // splitn(3, ' ') sees ["100", "64", "200 4 4 4"] → min parse fails arity.
-    let m = assert_parse_error(feed_chat_line("LS start 100 64 200 4 4 4"));
+    let m = assert_parse_error(feed_chat_line("LS cp 100 64 200 4 4 4"));
     assert!(m.contains("min") || m.contains("comma"), "{m}");
 }
 
@@ -314,8 +295,33 @@ fn missing_comma_wrong_shape_errors() {
 fn size_exceeds_u8_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    let m = assert_parse_error(feed_chat_line("LS start 100,64,200 4,4,300"));
+    let m = assert_parse_error(feed_chat_line("LS cp 100,64,200 4,4,300"));
     assert!(m.contains("size"), "{m}");
+}
+
+#[test]
+fn end_in_need_first_errors() {
+    let _g = fresh();
+    assert_buffered(feed_chat_line("LS title T"));
+    let m = assert_parse_error(feed_chat_line("LS end"));
+    assert!(m.contains("no checkpoints before `LS end`"), "{m}");
+}
+
+#[test]
+fn end_with_one_checkpoint_errors() {
+    let _g = fresh();
+    assert_buffered(feed_chat_line("LS title T"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1 only"));
+    let m = assert_parse_error(feed_chat_line("LS end"));
+    assert!(m.contains("at least 2 checkpoints"), "{m}");
+}
+
+#[test]
+fn end_with_trailing_args_errors() {
+    let _g = fresh();
+    assert_buffered(feed_chat_line("LS title T"));
+    let m = assert_parse_error(feed_chat_line("LS end stuff"));
+    assert!(m.contains("takes no arguments"), "{m}");
 }
 
 // ---- Buffered ----
@@ -327,32 +333,32 @@ fn title_alone_buffers() {
 }
 
 #[test]
-fn title_then_start_inline_buffers() {
+fn title_then_cp_inline_buffers() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    assert_buffered(feed_chat_line("LS start 0,0,0 2,4,2 start"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2 start"));
 }
 
 #[test]
-fn title_then_start_no_label_buffers() {
+fn title_then_cp_no_label_buffers() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    assert_buffered(feed_chat_line("LS start 0,0,0 2,4,2"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2"));
 }
 
 #[test]
-fn title_then_start_then_label_buffers() {
+fn title_then_cp_then_label_buffers() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    assert_buffered(feed_chat_line("LS start 0,0,0 2,4,2"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2"));
     assert_buffered(feed_chat_line("LS label start"));
 }
 
 #[test]
-fn title_then_start_then_cp_mixed_label_forms_buffer() {
+fn title_then_cp_chain_mixed_label_forms_buffer() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
-    assert_buffered(feed_chat_line("LS start 0,0,0 2,4,2 start"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2 start"));
     assert_buffered(feed_chat_line("LS cp 10,0,0 2,4,2"));
     assert_buffered(feed_chat_line("LS label split 1"));
     assert_buffered(feed_chat_line("LS cp 20,0,0 2,4,2 split 2"));
@@ -412,9 +418,10 @@ fn round_trip_all_inline() {
 fn round_trip_with_overflow_label_on_end() {
     let _g = fresh();
     // Force the End checkpoint's label past the inline cap so the
-    // finalizing line is `LS label <text>` not `LS endcp <coords> <label>`.
-    // Inline cp line: "LS endcp 30,0,0 2,4,2 <label>" = 23 + label cp.
-    // Cap is 61, so label needs > 38 cp to overflow inline.
+    // payload line is `LS cp <coords>` followed by `LS label <text>`,
+    // then `LS end`. Inline cp line: "LS cp 30,0,0 2,4,2 <label>" =
+    // 20 + label cp. Cap is 61, so label needs > 41 cp to overflow
+    // inline; 45 cp lands above that and still fits standalone.
     let long_label = "x".repeat(45);
     let track = Track {
         name: "T".into(),
@@ -434,8 +441,10 @@ fn round_trip_with_overflow_label_on_end() {
         ],
     };
     let lines = encode_for_chat(&track).unwrap();
-    assert_eq!(lines.len(), 1 + 2 + 1, "expected overflow on End");
-    assert!(lines.last().unwrap().starts_with("LS label "));
+    // title + cp(start inline) + cp(end bare) + label + end
+    assert_eq!(lines.len(), 1 + 1 + 1 + 1 + 1);
+    assert_eq!(lines.last().unwrap(), "LS end");
+    assert!(lines[lines.len() - 2].starts_with("LS label "));
     feed_all_but_last(&lines);
     let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
     assert_eq!(decoded, track);
@@ -445,13 +454,13 @@ fn round_trip_with_overflow_label_on_end() {
 fn refeed_title_resets_buffer() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T1"));
-    assert_buffered(feed_chat_line("LS start 0,0,0 2,4,2 start"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2 start"));
     assert_buffered(feed_chat_line("LS cp 10,0,0 2,4,2 mid"));
-    // Re-fed title resets.
+    // Re-fed title resets to NeedFirst.
     assert_buffered(feed_chat_line("LS title T2"));
-    // Now the only valid next is start; cp must error.
-    let m = assert_parse_error(feed_chat_line("LS cp 10,0,0 2,4,2 mid"));
-    assert!(m.contains("no `LS start`"), "{m}");
+    // No checkpoints buffered yet, so `LS end` must error.
+    let m = assert_parse_error(feed_chat_line("LS end"));
+    assert!(m.contains("no checkpoints before `LS end`"), "{m}");
 }
 
 #[test]
@@ -483,15 +492,16 @@ fn multi_space_label_survives_round_trip() {
 #[test]
 fn mixed_inline_and_followup_labels_round_trip() {
     let _g = fresh();
-    // First cp gets an inline label, second cp's label is delivered
-    // via a follow-up `LS label` line. Both should round-trip into
-    // an identical runtime track.
+    // First cp inline label, second cp's label via follow-up, third
+    // (becomes End) inline label. Round-trips to runtime kinds Start,
+    // Split, End.
     let lines = [
         "LS title mixed",
-        "LS start 0,0,0 2,4,2 start",
+        "LS cp 0,0,0 2,4,2 start",
         "LS cp 10,0,0 2,4,2",
         "LS label split 1",
-        "LS endcp 30,0,0 2,4,2 end",
+        "LS cp 30,0,0 2,4,2 end",
+        "LS end",
     ];
     for line in &lines[..lines.len() - 1] {
         assert_buffered(feed_chat_line(line));
@@ -575,21 +585,6 @@ fn map_in_idle_errors() {
 }
 
 #[test]
-fn endmap_in_idle_errors() {
-    let _g = fresh();
-    let m = assert_parse_error(feed_chat_line("LS endmap goal"));
-    assert!(m.contains("no `LS title`"), "{m}");
-}
-
-#[test]
-fn endmap_in_need_start_errors() {
-    let _g = fresh();
-    assert_buffered(feed_chat_line("LS title T"));
-    let m = assert_parse_error(feed_chat_line("LS endmap goal"));
-    assert!(m.contains("no checkpoints before `endmap`"), "{m}");
-}
-
-#[test]
 fn map_in_need_label_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
@@ -599,30 +594,11 @@ fn map_in_need_label_errors() {
 }
 
 #[test]
-fn endmap_in_need_label_errors() {
-    let _g = fresh();
-    assert_buffered(feed_chat_line("LS title T"));
-    assert_buffered(feed_chat_line("LS map spawn"));
-    let m = assert_parse_error(feed_chat_line("LS endmap goal"));
-    assert!(m.contains("not yet labeled"), "{m}");
-}
-
-#[test]
 fn empty_map_name_errors() {
     let _g = fresh();
     assert_buffered(feed_chat_line("LS title T"));
     let m = assert_parse_error(feed_chat_line("LS map "));
     assert!(m.contains("map name is empty"), "{m}");
-}
-
-#[test]
-fn empty_endmap_name_errors() {
-    let _g = fresh();
-    assert_buffered(feed_chat_line("LS title T"));
-    assert_buffered(feed_chat_line("LS map spawn"));
-    assert_buffered(feed_chat_line("LS label start"));
-    let m = assert_parse_error(feed_chat_line("LS endmap "));
-    assert!(m.contains("endmap name is empty"), "{m}");
 }
 
 #[test]
