@@ -528,7 +528,124 @@ fn unload_clears_starting_map() {
     let mut state = SplitsState::default();
     state.load(linear_track(), Some("home".to_string()));
     assert_eq!(state.starting_map.as_deref(), Some("home"));
+    assert_eq!(state.last_seen_map.as_deref(), Some("home"));
     state.unload();
     assert!(state.starting_map.is_none());
+    assert!(state.last_seen_map.is_none());
     assert!(state.track.is_none());
+}
+
+// ---- observe_map (tick-driven map-change detection) ----
+
+#[test]
+fn observe_map_seeds_last_seen_from_starting_map() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some("home".to_string()));
+    assert_eq!(state.last_seen_map.as_deref(), Some("home"));
+    // First observation matches starting_map → no fire.
+    let mut cmds = Vec::new();
+    observe_map(&mut state, Some("home"), |c| cmds.push(c));
+    assert!(cmds.is_empty());
+    assert_eq!(state.last_seen_map.as_deref(), Some("home"));
+}
+
+#[test]
+fn observe_map_rearm_keeps_last_seen() {
+    // rearm() must not touch last_seen_map — the physical map didn't
+    // change, just the run state.
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some("home".to_string()));
+    state.rearm();
+    assert_eq!(state.last_seen_map.as_deref(), Some("home"));
+}
+
+#[test]
+fn observe_map_none_world_does_not_reset_edge() {
+    // World briefly becomes None (e.g. between engine reset and
+    // tab-list catch-up). Must not clobber last_seen_map, so a later
+    // re-observation of the same map is still a no-op.
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some("home".to_string()));
+    let mut cmds = Vec::new();
+    observe_map(&mut state, None, |c| cmds.push(c));
+    assert_eq!(state.last_seen_map.as_deref(), Some("home"));
+    observe_map(&mut state, Some("home"), |c| cmds.push(c));
+    assert!(cmds.is_empty());
+}
+
+#[test]
+fn observe_map_fires_split_on_transition_to_mapload_target() {
+    // Reproduces the original bug: AABB Start fired (next_index = 1),
+    // next checkpoint is `MapLoaded("next")`. When the tick observes
+    // `world` flipping from "home" to "next", observe_map drives the
+    // MapLoaded Split.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp_map(CheckpointKind::Split, "next"),
+            cp(CheckpointKind::End, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some("home".to_string()));
+    let mut cmds = Vec::new();
+    step(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
+    assert_eq!(state.next_index, 1);
+
+    // A few ticks pass while tab-list still reports the old map — no
+    // change observed, no fire.
+    observe_map(&mut state, Some("home"), |c| cmds.push(c));
+    observe_map(&mut state, Some("home"), |c| cmds.push(c));
+    assert_eq!(names(&cmds), vec!["Start"]);
+
+    // Tab-list catches up. observe_map detects the transition and
+    // drives the MapLoaded Split.
+    observe_map(&mut state, Some("next"), |c| cmds.push(c));
+    assert_eq!(names(&cmds), vec!["Start", "Split"]);
+    assert_eq!(state.next_index, 2);
+    assert_eq!(state.last_seen_map.as_deref(), Some("next"));
+}
+
+#[test]
+fn observe_map_repeated_observations_fire_once() {
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp_map(CheckpointKind::End, "goal"),
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some("home".to_string()));
+    let mut cmds = Vec::new();
+    step(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
+
+    // First observation transitions home→goal: End fires once.
+    observe_map(&mut state, Some("goal"), |c| cmds.push(c));
+    // Subsequent ticks observe the same map: must not re-fire.
+    observe_map(&mut state, Some("goal"), |c| cmds.push(c));
+    observe_map(&mut state, Some("goal"), |c| cmds.push(c));
+    assert_eq!(names(&cmds), vec!["Start", "Split"]);
+    assert_eq!(state.next_index, 2);
+    assert_eq!(state.fired, vec![true, true]);
+}
+
+#[test]
+fn observe_map_off_route_warp_resets_in_progress_run() {
+    // Tick-side equivalent of the off-route abort case.
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some("home".to_string()));
+    let mut cmds = Vec::new();
+    step(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
+    step(&mut state, v(11.0, 1.0, 1.0), Some("home"), |c| {
+        cmds.push(c);
+    }); // Split₁
+    assert_eq!(state.next_index, 2);
+
+    observe_map(&mut state, Some("unrelated"), |c| cmds.push(c));
+    assert!(matches!(cmds.last(), Some(Command::Reset { .. })));
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false; 4]);
+    assert_eq!(state.last_seen_map.as_deref(), Some("unrelated"));
 }

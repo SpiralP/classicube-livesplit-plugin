@@ -16,7 +16,7 @@ use crate::{
     plugin::{
         livesplit,
         module::Module,
-        splits::geometry::{CheckpointKind, SplitsState, Track, step, step_on_map_loaded},
+        splits::geometry::{CheckpointKind, SplitsState, Track, observe_map, step},
     },
 };
 
@@ -51,6 +51,10 @@ impl SplitsModule {
                 let pos = entity.get_position();
                 let world = read_world_name();
                 let mut state = state.borrow_mut();
+                // Map-change detection runs before the AABB walk so a
+                // `MapLoaded` Split / End advances `next_index` first;
+                // `step` then sees the updated cursor for the same tick.
+                observe_map(&mut state, world.as_deref(), livesplit::send);
                 step(&mut state, pos, world.as_deref(), livesplit::send);
             });
         }
@@ -72,18 +76,13 @@ impl Module for SplitsModule {
 
     fn on_new_map_loaded(&mut self) {
         // Post-teleport `last_inside[]` reset so edge-triggered AABB
-        // detection works for boxes the player spawns inside. Do **not**
-        // touch `fired[]` or `next_index` — a Start AABB re-arms in
-        // place via `step()`, and `MapLoaded` Start re-arms via
-        // `step_on_map_loaded`. Clobbering `fired[]` here would also
-        // break multi-map runs whose splits live in `MapLoaded`
-        // checkpoints on incidental map changes.
+        // detection works for boxes the player spawns inside. The
+        // matching `step_on_map_loaded` call lives in the tick closure
+        // (via `observe_map`) because at the moment this event fires
+        // the engine has zeroed `World.Name` and the server hasn't yet
+        // pushed the updated tab-list group, so the map name resolved
+        // here would be stale on multiplayer.
         self.state.borrow_mut().last_inside.fill(false);
-
-        if let Some(name) = read_world_name() {
-            let mut state = self.state.borrow_mut();
-            step_on_map_loaded(&mut state, &name, livesplit::send);
-        }
     }
 }
 

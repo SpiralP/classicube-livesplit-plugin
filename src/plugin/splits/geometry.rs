@@ -130,6 +130,14 @@ pub struct SplitsState {
     /// only fire while the player is on the same map they loaded the
     /// track on.
     pub starting_map: Option<String>,
+    /// Last map name observed by [`observe_map`]. Drives the
+    /// edge-trigger for `step_on_map_loaded`: a `MapLoaded`
+    /// checkpoint fires when this value transitions to a different
+    /// map. Seeded from `starting_map` at load so the very first
+    /// observation on the same map is a no-op. Independent from
+    /// `starting_map` (which never changes after load) so the
+    /// AABB-scope walk in `step()` stays stable across map changes.
+    pub last_seen_map: Option<String>,
     pub next_index: usize,
     pub fired: Vec<bool>,
     pub last_inside: Vec<bool>,
@@ -139,6 +147,7 @@ impl SplitsState {
     pub fn load(&mut self, track: Track, starting_map: Option<String>) {
         let n = track.checkpoints.len();
         self.track = Some(track);
+        self.last_seen_map = starting_map.clone();
         self.starting_map = starting_map;
         self.next_index = 0;
         self.fired = vec![false; n];
@@ -159,6 +168,7 @@ impl SplitsState {
     pub fn unload(&mut self) {
         self.track = None;
         self.starting_map = None;
+        self.last_seen_map = None;
         self.next_index = 0;
         self.fired.clear();
         self.last_inside.clear();
@@ -237,11 +247,35 @@ pub fn step<F: FnMut(Command)>(
     state.last_inside = inside_now;
 }
 
-/// Map-load counterpart of [`step`]. Called once per `on_new_map_loaded`
-/// with the engine's `World.Name`. No edge detection — each callback is
-/// a single discrete event. Sequential and one-shot rules match
-/// [`step`]: a Start always re-arms; Split/End only fire when `i ==
-/// next_index`.
+/// Edge-trigger wrapper over [`step_on_map_loaded`] for tick-driven
+/// map-change detection. Compares the freshly-observed map name
+/// against `state.last_seen_map`; on a transition to a different
+/// `Some(name)` fires `step_on_map_loaded` and latches
+/// `last_seen_map`. `None` observations are ignored so transient
+/// gaps (e.g. between `World.Name = ""` and the tab-list group
+/// catching up after a server-driven map change) don't reset the
+/// edge.
+///
+/// Driven from the per-tick poll in `SplitsModule` rather than from
+/// `on_new_map_loaded` because on multiplayer the engine raises
+/// `MapLoaded` before the server's `ExtAddPlayerName` updates the
+/// local player's tab-list group, so the map name at the event is
+/// stale. Polling defers the observation until both signals (engine
+/// + protocol) have settled.
+pub fn observe_map<F: FnMut(Command)>(state: &mut SplitsState, world: Option<&str>, send: F) {
+    let Some(name) = world else {
+        return;
+    };
+    if state.last_seen_map.as_deref() == Some(name) {
+        return;
+    }
+    state.last_seen_map = Some(name.to_owned());
+    step_on_map_loaded(state, name, send);
+}
+
+/// Map-load counterpart of [`step`]. Sequential and one-shot rules
+/// match [`step`]: a Start always re-arms; Split/End only fire when
+/// `i == next_index`.
 ///
 /// Off-route guard: if `map_name` is neither `state.starting_map` nor
 /// the target of any `Trigger::MapLoaded` in the track, the player has
