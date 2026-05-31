@@ -10,6 +10,9 @@ fn loadtest_has_expected_kind_sequence() {
             CheckpointKind::Start,
             CheckpointKind::Split,
             CheckpointKind::Split,
+            CheckpointKind::Split,
+            CheckpointKind::Split,
+            CheckpointKind::Split,
             CheckpointKind::End,
         ]
     );
@@ -24,6 +27,20 @@ fn loadtest_labels_are_populated() {
 }
 
 #[test]
+fn loadtest_has_map_loaded_trigger() {
+    let t = loadtest();
+    let map_triggers: Vec<&str> = t
+        .checkpoints
+        .iter()
+        .filter_map(|c| match &c.trigger {
+            Trigger::MapLoaded(name) => Some(name.as_str()),
+            Trigger::Aabb(_) => None,
+        })
+        .collect();
+    assert_eq!(map_triggers, vec!["mapname"]);
+}
+
+#[test]
 fn save_loadtest_as_lss() {
     use std::{env, fs};
 
@@ -31,12 +48,14 @@ fn save_loadtest_as_lss() {
 
     let mut run = Run::new();
     run.set_game_name("ClassiCube");
-    run.set_category_name("loadtest");
+    run.set_category_name("Load Test");
 
     // LiveSplit's segment list is everything after the implicit Start —
     // pressing Start is the timer-side action, not a named segment. So
     // the fixture's Start checkpoint doesn't get a Segment; the rest do.
-    let segment_names = ["split 1", "split 2", "end"];
+    let segment_names = [
+        "Split A", "Split B", "Map Name", "Split C", "Split D", "Split E",
+    ];
     for name in segment_names {
         run.push_segment(Segment::new(name));
     }
@@ -51,7 +70,7 @@ fn save_loadtest_as_lss() {
     assert!(buf.starts_with(r#"<?xml version="1.0" encoding="UTF-8"?>"#));
     assert!(buf.contains(r#"<Run version="1.8.0">"#));
     assert!(buf.contains("<GameName>ClassiCube</GameName>"));
-    assert!(buf.contains("<CategoryName>loadtest</CategoryName>"));
+    assert!(buf.contains("<CategoryName>Load Test</CategoryName>"));
     for name in segment_names {
         assert!(
             buf.contains(&format!("<Name>{name}</Name>")),
