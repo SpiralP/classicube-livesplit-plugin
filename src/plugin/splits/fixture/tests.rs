@@ -13,6 +13,7 @@ fn loadtest_has_expected_kind_sequence() {
             CheckpointKind::Split,
             CheckpointKind::Split,
             CheckpointKind::Split,
+            CheckpointKind::Split,
             CheckpointKind::End,
         ]
     );
@@ -37,7 +38,7 @@ fn loadtest_has_map_loaded_trigger() {
             Trigger::Aabb(_) => None,
         })
         .collect();
-    assert_eq!(map_triggers, vec!["mapname"]);
+    assert_eq!(map_triggers, vec!["spiralp+livesplit2", "main6"]);
 }
 
 #[test]
@@ -50,11 +51,14 @@ fn loadtest_encodes_to_expected_wire_form() {
             "LS title Load Test",
             "LS cp 0,0,0 2,4,2 Start CheckPoint",
             "LS cp 10,0,0 2,4,2 Split A",
-            "LS cp 20,0,0 2,4,2 Split B",
-            "LS map mapname Map Name",
+            "LS cp 20,0,0 2,4,2",
+            "LS label Split B with a really really long descriptive label",
+            "LS map spiralp+livesplit2",
+            "LS label Map Name with a really really long descriptive label",
             "LS cp 0,0,0 2,4,2 Split C",
             "LS cp 10,0,0 2,4,2 Split D",
             "LS cp 20,0,0 2,4,2 Split E",
+            "LS map main6 Main Map",
             "LS end",
         ]
     );
@@ -74,7 +78,13 @@ fn save_loadtest_as_lss() {
     // pressing Start is the timer-side action, not a named segment. So
     // the fixture's Start checkpoint doesn't get a Segment; the rest do.
     let segment_names = [
-        "Split A", "Split B", "Map Name", "Split C", "Split D", "Split E",
+        "Split A",
+        "Split B with a really really long descriptive label",
+        "Map Name with a really really long descriptive label",
+        "Split C",
+        "Split D",
+        "Split E",
+        "Main Map",
     ];
     for name in segment_names {
         run.push_segment(Segment::new(name));

@@ -6,10 +6,13 @@ use classicube_sys::Vec3;
 use crate::plugin::splits::geometry::{Aabb, Checkpoint, CheckpointKind, Track, Trigger};
 
 /// A small fixed track used by the `/client LiveSplit loadtest` chat
-/// subcommand for development. Seven checkpoints arranged in two AABB
-/// rows along the +X axis with a `MapLoaded` checkpoint in the middle,
-/// so a runner can exercise both trigger shapes and the full IPC path
-/// before a real track-source is available.
+/// subcommand for development. Eight checkpoints arranged as two AABB
+/// rows along the +X axis with a `MapLoaded` Split in the middle and
+/// a `MapLoaded` End on the far side. The encoded wire form exercises
+/// both inline and `LS label` follow-up forms for both `cp` and `map`
+/// triggers: `Split B` (AABB) and the middle map carry overflow-length
+/// labels that force the follow-up fallback; the End map and every
+/// other AABB fit inline.
 #[must_use]
 pub fn loadtest() -> Track {
     Track {
@@ -31,9 +34,13 @@ pub fn loadtest() -> Track {
                 CheckpointKind::Split,
                 (20.0, 0.0, 0.0),
                 (22.0, 4.0, 2.0),
-                "Split B",
+                "Split B with a really really long descriptive label",
             ),
-            map_checkpoint(CheckpointKind::Split, "mapname", "Map Name"),
+            map_checkpoint(
+                CheckpointKind::Split,
+                "spiralp+livesplit2",
+                "Map Name with a really really long descriptive label",
+            ),
             aabb_checkpoint(
                 CheckpointKind::Split,
                 (0.0, 0.0, 0.0),
@@ -47,11 +54,12 @@ pub fn loadtest() -> Track {
                 "Split D",
             ),
             aabb_checkpoint(
-                CheckpointKind::End,
+                CheckpointKind::Split,
                 (20.0, 0.0, 0.0),
                 (22.0, 4.0, 2.0),
                 "Split E",
             ),
+            map_checkpoint(CheckpointKind::End, "main6", "Main Map"),
         ],
     }
 }
