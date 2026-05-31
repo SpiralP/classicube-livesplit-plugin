@@ -31,7 +31,33 @@ pub enum Command {
     SetLoadingTimes {
         time: TimeSpan,
     },
+    #[serde(rename_all = "camelCase")]
+    SetCurrentTimingMethod {
+        timing_method: TimingMethod,
+    },
     Ping,
+}
+
+/// Matches livesplit-core's `TimingMethod` enum byte-for-byte on the wire
+/// (variants serialize as the bare PascalCase names, `"RealTime"` /
+/// `"GameTime"`), so the JSON command shape exactly mirrors
+/// `Command::SetCurrentTimingMethod` in
+/// `livesplit-core/src/networking/server_protocol.rs`.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub enum TimingMethod {
+    RealTime,
+    GameTime,
+}
+
+impl TimingMethod {
+    /// Desktop line-protocol token for `switchto <token>`; see
+    /// `LiveSplit/src/LiveSplit.Core/Server/CommandServer.cs:453-466`.
+    fn line_token(self) -> &'static str {
+        match self {
+            Self::RealTime => "realtime",
+            Self::GameTime => "gametime",
+        }
+    }
 }
 
 impl Command {
@@ -54,6 +80,9 @@ impl Command {
             Self::PauseGameTime => "pausegametime".into(),
             Self::ResumeGameTime => "unpausegametime".into(),
             Self::SetLoadingTimes { time } => format!("setloadingtimes {time}"),
+            Self::SetCurrentTimingMethod { timing_method } => {
+                format!("switchto {}", timing_method.line_token())
+            }
             Self::Ping => "ping".into(),
         })
     }

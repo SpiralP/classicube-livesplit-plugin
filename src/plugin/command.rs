@@ -8,7 +8,7 @@ use crate::{
     chat_print,
     plugin::{
         is_plugin_active,
-        livesplit::{self, Command as LsCommand},
+        livesplit::{self, Command as LsCommand, protocol::TimingMethod},
         module::Module,
         splits,
         track_source::encode::encode_for_chat,
@@ -124,6 +124,9 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         }
         ["start"] => {
             if require_connected() {
+                livesplit::send(LsCommand::SetCurrentTimingMethod {
+                    timing_method: TimingMethod::GameTime,
+                });
                 livesplit::send(LsCommand::Start);
             }
         }
@@ -134,6 +137,9 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         }
         ["splitorstart"] => {
             if require_connected() {
+                livesplit::send(LsCommand::SetCurrentTimingMethod {
+                    timing_method: TimingMethod::GameTime,
+                });
                 livesplit::send(LsCommand::SplitOrStart);
             }
         }

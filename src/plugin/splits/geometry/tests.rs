@@ -51,16 +51,21 @@ fn run(positions: &[Vec3]) -> Vec<Command> {
     out
 }
 
-fn variant_name(c: &Command) -> &'static str {
+fn variant_name(c: &Command) -> Option<&'static str> {
     match c {
-        Command::Start => "Start",
-        Command::Split => "Split",
-        _ => "Other",
+        Command::Start => Some("Start"),
+        Command::Split => Some("Split"),
+        // Timing-method commands are bundled with `Start` and asserted
+        // separately in `start_is_preceded_by_set_current_timing_method`;
+        // filter them out of the sequence helper so geometry tests can
+        // continue to assert against fire-event names alone.
+        Command::SetCurrentTimingMethod { .. } => None,
+        _ => Some("Other"),
     }
 }
 
 fn names(cmds: &[Command]) -> Vec<&'static str> {
-    cmds.iter().map(variant_name).collect()
+    cmds.iter().filter_map(variant_name).collect()
 }
 
 #[test]
@@ -98,6 +103,61 @@ fn aabb_new_canonicalizes_swapped_corners() {
     assert_eq!(a, b);
     assert_eq!(a.min, v(1.0, 2.0, 3.0));
     assert_eq!(a.max, v(5.0, 6.0, 7.0));
+}
+
+#[test]
+fn start_is_preceded_by_set_current_timing_method() {
+    // Bundled with `Command::Start`: every Start fired by the geometry
+    // layer is immediately preceded by
+    // `SetCurrentTimingMethod { GameTime }` so the timer is in game-time
+    // mode before the run begins (the pause/resume-game-time commands
+    // emitted on map loads only affect the displayed timer in that mode).
+    use crate::plugin::livesplit::protocol::TimingMethod;
+
+    // AABB Start.
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    let mut cmds = Vec::new();
+    step(&mut state, v(1.0, 1.0, 1.0), Some(TEST_MAP), |c| {
+        cmds.push(c)
+    });
+    assert!(
+        matches!(
+            cmds.as_slice(),
+            [
+                Command::SetCurrentTimingMethod {
+                    timing_method: TimingMethod::GameTime,
+                },
+                Command::Start,
+            ]
+        ),
+        "AABB Start bundling: {cmds:?}",
+    );
+
+    // MapLoaded Start.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp_map(CheckpointKind::Start, "a"),
+            cp_map(CheckpointKind::End, "b"),
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some("a".to_string()));
+    let mut cmds = Vec::new();
+    step_on_map_loaded(&mut state, "a", |c| cmds.push(c));
+    assert!(
+        matches!(
+            cmds.as_slice(),
+            [
+                Command::SetCurrentTimingMethod {
+                    timing_method: TimingMethod::GameTime,
+                },
+                Command::Start,
+            ]
+        ),
+        "MapLoaded Start bundling: {cmds:?}",
+    );
 }
 
 #[test]

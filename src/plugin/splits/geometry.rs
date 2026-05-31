@@ -4,7 +4,7 @@ mod tests;
 use anyhow::{Result, bail};
 use classicube_sys::Vec3;
 
-use crate::plugin::livesplit::Command;
+use crate::plugin::livesplit::{Command, protocol::TimingMethod};
 
 /// Quantize an `f32` world coord to block precision (`u16`). CC world
 /// coords are non-negative and a "big" CC map is roughly 700 × 300 × 1000
@@ -231,6 +231,9 @@ pub fn step<F: FnMut(Command)>(
                 state.fired.iter_mut().for_each(|b| *b = false);
                 state.fired[i] = true;
                 state.next_index = i + 1;
+                send(Command::SetCurrentTimingMethod {
+                    timing_method: TimingMethod::GameTime,
+                });
                 send(Command::Start);
             }
             CheckpointKind::Split | CheckpointKind::End
@@ -316,6 +319,9 @@ pub fn step_on_map_loaded<F: FnMut(Command)>(state: &mut SplitsState, map_name: 
                 state.fired.iter_mut().for_each(|b| *b = false);
                 state.fired[i] = true;
                 state.next_index = i + 1;
+                send(Command::SetCurrentTimingMethod {
+                    timing_method: TimingMethod::GameTime,
+                });
                 send(Command::Start);
             }
             CheckpointKind::Split | CheckpointKind::End

@@ -49,6 +49,22 @@ fn set_game_time_serializes_secs_and_padded_nanos() {
 }
 
 #[test]
+fn set_current_timing_method_serializes_camel_case() {
+    assert_eq!(
+        json(&Command::SetCurrentTimingMethod {
+            timing_method: TimingMethod::GameTime,
+        }),
+        r#"{"command":"setCurrentTimingMethod","timingMethod":"GameTime"}"#
+    );
+    assert_eq!(
+        json(&Command::SetCurrentTimingMethod {
+            timing_method: TimingMethod::RealTime,
+        }),
+        r#"{"command":"setCurrentTimingMethod","timingMethod":"RealTime"}"#
+    );
+}
+
+#[test]
 fn set_loading_times_zero_pads_to_nine_digits() {
     let cmd = Command::SetLoadingTimes {
         time: TimeSpan(Duration::from_millis(1500)),
@@ -109,6 +125,26 @@ fn line_set_game_time_serializes_secs_and_padded_nanos() {
         time: TimeSpan(Duration::new(83, 25)),
     };
     assert_eq!(cmd.to_line().as_deref(), Some("setgametime 83.000000025"));
+}
+
+#[test]
+fn line_set_current_timing_method_uses_switchto() {
+    assert_eq!(
+        Command::SetCurrentTimingMethod {
+            timing_method: TimingMethod::GameTime,
+        }
+        .to_line()
+        .as_deref(),
+        Some("switchto gametime")
+    );
+    assert_eq!(
+        Command::SetCurrentTimingMethod {
+            timing_method: TimingMethod::RealTime,
+        }
+        .to_line()
+        .as_deref(),
+        Some("switchto realtime")
+    );
 }
 
 #[test]
