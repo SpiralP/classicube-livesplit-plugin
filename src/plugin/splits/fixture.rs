@@ -13,6 +13,11 @@ use crate::plugin::splits::geometry::{Aabb, Checkpoint, CheckpointKind, Track, T
 /// triggers: `Split B` (AABB) and the middle map carry overflow-length
 /// labels that force the follow-up fallback; the End map and every
 /// other AABB fit inline.
+///
+/// The first three AABBs use `map: None` (the section-0 "starting map"
+/// sentinel) so they fire only on whatever world the player loaded
+/// the track on. After the `MapLoaded("spiralp+livesplit2")` Split,
+/// the next three AABBs are scoped to that map by name.
 #[must_use]
 pub fn loadtest() -> Track {
     Track {
@@ -22,18 +27,21 @@ pub fn loadtest() -> Track {
                 CheckpointKind::Start,
                 (0.0, 0.0, 0.0),
                 (2.0, 4.0, 2.0),
+                None,
                 "Start CheckPoint",
             ),
             aabb_checkpoint(
                 CheckpointKind::Split,
                 (10.0, 0.0, 0.0),
                 (12.0, 4.0, 2.0),
+                None,
                 "Split A",
             ),
             aabb_checkpoint(
                 CheckpointKind::Split,
                 (20.0, 0.0, 0.0),
                 (22.0, 4.0, 2.0),
+                None,
                 "Split B with a really really long descriptive label",
             ),
             map_checkpoint(
@@ -45,18 +53,21 @@ pub fn loadtest() -> Track {
                 CheckpointKind::Split,
                 (0.0, 0.0, 0.0),
                 (2.0, 4.0, 2.0),
+                Some("spiralp+livesplit2"),
                 "Split C",
             ),
             aabb_checkpoint(
                 CheckpointKind::Split,
                 (10.0, 0.0, 0.0),
                 (12.0, 4.0, 2.0),
+                Some("spiralp+livesplit2"),
                 "Split D",
             ),
             aabb_checkpoint(
                 CheckpointKind::Split,
                 (20.0, 0.0, 0.0),
                 (22.0, 4.0, 2.0),
+                Some("spiralp+livesplit2"),
                 "Split E",
             ),
             map_checkpoint(CheckpointKind::End, "main6", "Main Map"),
@@ -68,14 +79,18 @@ fn aabb_checkpoint(
     kind: CheckpointKind,
     min: (f32, f32, f32),
     max: (f32, f32, f32),
+    map: Option<&str>,
     label: &str,
 ) -> Checkpoint {
     Checkpoint {
         kind,
-        trigger: Trigger::Aabb(Aabb {
-            min: Vec3::new(min.0, min.1, min.2),
-            max: Vec3::new(max.0, max.1, max.2),
-        }),
+        trigger: Trigger::Aabb {
+            aabb: Aabb {
+                min: Vec3::new(min.0, min.1, min.2),
+                max: Vec3::new(max.0, max.1, max.2),
+            },
+            map: map.map(str::to_string),
+        },
         label: label.into(),
     }
 }

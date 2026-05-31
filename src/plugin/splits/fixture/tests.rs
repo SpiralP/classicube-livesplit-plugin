@@ -35,7 +35,7 @@ fn loadtest_has_map_loaded_trigger() {
         .iter()
         .filter_map(|c| match &c.trigger {
             Trigger::MapLoaded(name) => Some(name.as_str()),
-            Trigger::Aabb(_) => None,
+            Trigger::Aabb { .. } => None,
         })
         .collect();
     assert_eq!(map_triggers, vec!["spiralp+livesplit2", "main6"]);

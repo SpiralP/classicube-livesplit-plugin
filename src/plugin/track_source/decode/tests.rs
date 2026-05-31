@@ -32,9 +32,22 @@ fn aabb(min: (f32, f32, f32), max: (f32, f32, f32)) -> Aabb {
 }
 
 fn cp(kind: CheckpointKind, min: (f32, f32, f32), max: (f32, f32, f32), label: &str) -> Checkpoint {
+    cp_on(kind, min, max, None, label)
+}
+
+fn cp_on(
+    kind: CheckpointKind,
+    min: (f32, f32, f32),
+    max: (f32, f32, f32),
+    map: Option<&str>,
+    label: &str,
+) -> Checkpoint {
     Checkpoint {
         kind,
-        trigger: Trigger::Aabb(aabb(min, max)),
+        trigger: Trigger::Aabb {
+            aabb: aabb(min, max),
+            map: map.map(str::to_string),
+        },
         label: label.into(),
     }
 }
@@ -552,6 +565,9 @@ fn map_only_round_trip_via_encoder() {
 #[test]
 fn mixed_aabb_and_map_round_trip_via_encoder() {
     let _g = fresh();
+    // The AABB after `level2` must declare `map: Some("level2")` to
+    // satisfy the encoder's section-scope check; the decoder bakes
+    // the same scope when reading the lines back.
     let track = Track {
         name: "mix".into(),
         checkpoints: vec![
@@ -562,10 +578,11 @@ fn mixed_aabb_and_map_round_trip_via_encoder() {
                 "begin",
             ),
             cp_map(CheckpointKind::Split, "level2", "to level 2"),
-            cp(
+            cp_on(
                 CheckpointKind::Split,
                 (20.0, 0.0, 0.0),
                 (22.0, 4.0, 2.0),
+                Some("level2"),
                 "post-load",
             ),
             cp_map(CheckpointKind::End, "goal", "fin"),
@@ -678,4 +695,159 @@ fn map_inline_empty_label_errors() {
     // `LS cp` empty-inline-label error.
     let m = assert_parse_error(feed_chat_line("LS map spawn "));
     assert!(m.contains("inline label is empty"), "{m}");
+}
+
+// ---- AABB section scope ----
+
+#[test]
+fn cp_before_any_map_has_none_scope() {
+    let _g = fresh();
+    let lines = [
+        "LS title T",
+        "LS cp 0,0,0 2,4,2 start",
+        "LS cp 10,0,0 2,4,2 end",
+        "LS end",
+    ];
+    for line in &lines[..lines.len() - 1] {
+        assert_buffered(feed_chat_line(line));
+    }
+    let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+    for cp in &decoded.checkpoints {
+        match &cp.trigger {
+            Trigger::Aabb { map, .. } => assert_eq!(*map, None),
+            other => panic!("expected Aabb, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn cp_after_map_carries_map_scope() {
+    let _g = fresh();
+    let lines = [
+        "LS title T",
+        "LS cp 0,0,0 2,4,2 start",
+        "LS map level2 cross",
+        "LS cp 20,0,0 2,4,2 after",
+        "LS end",
+    ];
+    for line in &lines[..lines.len() - 1] {
+        assert_buffered(feed_chat_line(line));
+    }
+    let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+    match &decoded.checkpoints[0].trigger {
+        Trigger::Aabb { map, .. } => assert_eq!(*map, None, "section-0 cp"),
+        other => panic!("expected Aabb, got {other:?}"),
+    }
+    match &decoded.checkpoints[2].trigger {
+        Trigger::Aabb { map, .. } => assert_eq!(map.as_deref(), Some("level2"), "section-1 cp"),
+        other => panic!("expected Aabb, got {other:?}"),
+    }
+}
+
+#[test]
+fn start_via_map_scopes_next_cp() {
+    let _g = fresh();
+    // Start is a MapLoaded; subsequent AABB must be scoped to that map.
+    let lines = [
+        "LS title T",
+        "LS map mapA begin",
+        "LS cp 0,0,0 2,4,2 end",
+        "LS end",
+    ];
+    for line in &lines[..lines.len() - 1] {
+        assert_buffered(feed_chat_line(line));
+    }
+    let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+    match &decoded.checkpoints[1].trigger {
+        Trigger::Aabb { map, .. } => assert_eq!(map.as_deref(), Some("mapA")),
+        other => panic!("expected Aabb, got {other:?}"),
+    }
+}
+
+#[test]
+fn refeed_title_resets_scope() {
+    let _g = fresh();
+    assert_buffered(feed_chat_line("LS title T1"));
+    assert_buffered(feed_chat_line("LS map mapA begin"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2 after"));
+    // Re-fed title resets to NeedFirst with fresh None scope.
+    assert_buffered(feed_chat_line("LS title T2"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2 start"));
+    assert_buffered(feed_chat_line("LS cp 10,0,0 2,4,2 end"));
+    let decoded = assert_loaded(feed_chat_line("LS end"));
+    assert_eq!(decoded.name, "T2");
+    for cp in &decoded.checkpoints {
+        match &cp.trigger {
+            Trigger::Aabb { map, .. } => assert_eq!(*map, None),
+            other => panic!("expected Aabb, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn user_example_round_trips_with_correct_scopes() {
+    let _g = fresh();
+    // The example from the design discussion: 3 section-0 AABBs,
+    // MapLoaded("mapname"), 3 section-1 AABBs (last → End).
+    let lines = [
+        "LS title Load Test",
+        "LS cp 0,0,0 2,4,2 Start CheckPoint",
+        "LS cp 10,0,0 2,4,2 Split A",
+        "LS cp 20,0,0 2,4,2 Split B",
+        "LS map mapname Map Name",
+        "LS cp 0,0,0 2,4,2 Split C",
+        "LS cp 10,0,0 2,4,2 Split D",
+        "LS cp 20,0,0 2,4,2 Split E",
+        "LS end",
+    ];
+    for line in &lines[..lines.len() - 1] {
+        assert_buffered(feed_chat_line(line));
+    }
+    let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+    let expected = Track {
+        name: "Load Test".into(),
+        checkpoints: vec![
+            cp(
+                CheckpointKind::Start,
+                (0.0, 0.0, 0.0),
+                (2.0, 4.0, 2.0),
+                "Start CheckPoint",
+            ),
+            cp(
+                CheckpointKind::Split,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "Split A",
+            ),
+            cp(
+                CheckpointKind::Split,
+                (20.0, 0.0, 0.0),
+                (22.0, 4.0, 2.0),
+                "Split B",
+            ),
+            cp_map(CheckpointKind::Split, "mapname", "Map Name"),
+            cp_on(
+                CheckpointKind::Split,
+                (0.0, 0.0, 0.0),
+                (2.0, 4.0, 2.0),
+                Some("mapname"),
+                "Split C",
+            ),
+            cp_on(
+                CheckpointKind::Split,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                Some("mapname"),
+                "Split D",
+            ),
+            cp_on(
+                CheckpointKind::End,
+                (20.0, 0.0, 0.0),
+                (22.0, 4.0, 2.0),
+                Some("mapname"),
+                "Split E",
+            ),
+        ],
+    };
+    assert_eq!(decoded, expected);
 }

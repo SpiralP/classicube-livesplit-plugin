@@ -26,22 +26,29 @@ pub enum FrameOutcome {
 enum State {
     Idle,
     /// `LS title` accepted; next valid line is `cp` or `map` (which
-    /// becomes the Start-kind checkpoint).
+    /// becomes the Start-kind checkpoint). `scope` is always `None`
+    /// on entry — no `LS map` directive has been seen yet — so the
+    /// first AABB pushes with `map: None`.
     NeedFirst {
         name: String,
+        scope: Option<String>,
     },
     /// At least one checkpoint is in `slots`; the most recent one
     /// already has its label populated. Next line is `cp` / `map` /
-    /// `end` / `title`.
+    /// `end` / `title`. `scope` is the running AABB scope: `None`
+    /// before any `LS map`, else `Some(name)` of the most recent map.
     NeedNext {
         name: String,
         slots: Vec<Checkpoint>,
+        scope: Option<String>,
     },
     /// The most recent push has an empty label. Next line must be
-    /// `LS label <text>` (or `LS title <name>` to reset).
+    /// `LS label <text>` (or `LS title <name>` to reset). `scope`
+    /// threads through unchanged until the label arrives.
     NeedLabel {
         name: String,
         slots: Vec<Checkpoint>,
+        scope: Option<String>,
     },
 }
 
@@ -219,104 +226,159 @@ fn parse_u8_triple(s: &str) -> Result<[u8; 3], String> {
 fn transition(state: &mut State, line: Line) -> FrameOutcome {
     // `LS title` is the universal reset from any state.
     if let Line::Title { name } = line {
-        *state = State::NeedFirst { name };
+        *state = State::NeedFirst { name, scope: None };
         return FrameOutcome::Buffered;
     }
 
     let taken = mem::replace(state, State::Idle);
 
     match (taken, line) {
-        (State::NeedFirst { name }, Line::Cp { aabb, label }) => match label {
-            Some(label) => {
-                *state = State::NeedNext {
-                    name,
-                    slots: vec![Checkpoint {
-                        kind: CheckpointKind::Start,
-                        trigger: Trigger::Aabb(aabb),
+        (State::NeedFirst { name, scope }, Line::Cp { aabb, label }) => {
+            let trigger = Trigger::Aabb {
+                aabb,
+                map: scope.clone(),
+            };
+            match label {
+                Some(label) => {
+                    *state = State::NeedNext {
+                        name,
+                        slots: vec![Checkpoint {
+                            kind: CheckpointKind::Start,
+                            trigger,
+                            label,
+                        }],
+                        scope,
+                    };
+                    FrameOutcome::Buffered
+                }
+                None => {
+                    *state = State::NeedLabel {
+                        name,
+                        slots: vec![Checkpoint {
+                            kind: CheckpointKind::Start,
+                            trigger,
+                            label: String::new(),
+                        }],
+                        scope,
+                    };
+                    FrameOutcome::Buffered
+                }
+            }
+        }
+        (State::NeedFirst { name, scope: _ }, Line::Map { name: map, label }) => {
+            let trigger = Trigger::MapLoaded(map.clone());
+            // The Start MapLoaded itself also opens the next section:
+            // subsequent `LS cp` lines are scoped to `map`.
+            let new_scope = Some(map);
+            match label {
+                Some(label) => {
+                    *state = State::NeedNext {
+                        name,
+                        slots: vec![Checkpoint {
+                            kind: CheckpointKind::Start,
+                            trigger,
+                            label,
+                        }],
+                        scope: new_scope,
+                    };
+                    FrameOutcome::Buffered
+                }
+                None => {
+                    *state = State::NeedLabel {
+                        name,
+                        slots: vec![Checkpoint {
+                            kind: CheckpointKind::Start,
+                            trigger,
+                            label: String::new(),
+                        }],
+                        scope: new_scope,
+                    };
+                    FrameOutcome::Buffered
+                }
+            }
+        }
+        (
+            State::NeedNext {
+                name,
+                mut slots,
+                scope,
+            },
+            Line::Cp { aabb, label },
+        ) => {
+            let trigger = Trigger::Aabb {
+                aabb,
+                map: scope.clone(),
+            };
+            match label {
+                Some(label) => {
+                    slots.push(Checkpoint {
+                        kind: CheckpointKind::Split,
+                        trigger,
                         label,
-                    }],
-                };
-                FrameOutcome::Buffered
-            }
-            None => {
-                *state = State::NeedLabel {
-                    name,
-                    slots: vec![Checkpoint {
-                        kind: CheckpointKind::Start,
-                        trigger: Trigger::Aabb(aabb),
+                    });
+                    *state = State::NeedNext { name, slots, scope };
+                    FrameOutcome::Buffered
+                }
+                None => {
+                    slots.push(Checkpoint {
+                        kind: CheckpointKind::Split,
+                        trigger,
                         label: String::new(),
-                    }],
-                };
-                FrameOutcome::Buffered
+                    });
+                    *state = State::NeedLabel { name, slots, scope };
+                    FrameOutcome::Buffered
+                }
             }
-        },
-        (State::NeedFirst { name }, Line::Map { name: map, label }) => match label {
-            Some(label) => {
-                *state = State::NeedNext {
-                    name,
-                    slots: vec![Checkpoint {
-                        kind: CheckpointKind::Start,
-                        trigger: Trigger::MapLoaded(map),
+        }
+        (
+            State::NeedNext {
+                name,
+                mut slots,
+                scope: _,
+            },
+            Line::Map { name: map, label },
+        ) => {
+            let trigger = Trigger::MapLoaded(map.clone());
+            let new_scope = Some(map);
+            match label {
+                Some(label) => {
+                    slots.push(Checkpoint {
+                        kind: CheckpointKind::Split,
+                        trigger,
                         label,
-                    }],
-                };
-                FrameOutcome::Buffered
-            }
-            None => {
-                *state = State::NeedLabel {
-                    name,
-                    slots: vec![Checkpoint {
-                        kind: CheckpointKind::Start,
-                        trigger: Trigger::MapLoaded(map),
+                    });
+                    *state = State::NeedNext {
+                        name,
+                        slots,
+                        scope: new_scope,
+                    };
+                    FrameOutcome::Buffered
+                }
+                None => {
+                    slots.push(Checkpoint {
+                        kind: CheckpointKind::Split,
+                        trigger,
                         label: String::new(),
-                    }],
-                };
-                FrameOutcome::Buffered
+                    });
+                    *state = State::NeedLabel {
+                        name,
+                        slots,
+                        scope: new_scope,
+                    };
+                    FrameOutcome::Buffered
+                }
             }
-        },
-        (State::NeedNext { name, mut slots }, Line::Cp { aabb, label }) => match label {
-            Some(label) => {
-                slots.push(Checkpoint {
-                    kind: CheckpointKind::Split,
-                    trigger: Trigger::Aabb(aabb),
-                    label,
-                });
-                *state = State::NeedNext { name, slots };
-                FrameOutcome::Buffered
-            }
-            None => {
-                slots.push(Checkpoint {
-                    kind: CheckpointKind::Split,
-                    trigger: Trigger::Aabb(aabb),
-                    label: String::new(),
-                });
-                *state = State::NeedLabel { name, slots };
-                FrameOutcome::Buffered
-            }
-        },
-        (State::NeedNext { name, mut slots }, Line::Map { name: map, label }) => match label {
-            Some(label) => {
-                slots.push(Checkpoint {
-                    kind: CheckpointKind::Split,
-                    trigger: Trigger::MapLoaded(map),
-                    label,
-                });
-                *state = State::NeedNext { name, slots };
-                FrameOutcome::Buffered
-            }
-            None => {
-                slots.push(Checkpoint {
-                    kind: CheckpointKind::Split,
-                    trigger: Trigger::MapLoaded(map),
-                    label: String::new(),
-                });
-                *state = State::NeedLabel { name, slots };
-                FrameOutcome::Buffered
-            }
-        },
-        (State::NeedNext { name, mut slots }, Line::End) => {
+        }
+        (
+            State::NeedNext {
+                name,
+                mut slots,
+                scope,
+            },
+            Line::End,
+        ) => {
             if slots.len() < 2 {
-                *state = State::NeedNext { name, slots };
+                *state = State::NeedNext { name, slots, scope };
                 return FrameOutcome::ParseError(
                     "track needs at least 2 checkpoints before `LS end`".to_string(),
                 );
@@ -327,12 +389,19 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                 checkpoints: slots,
             })
         }
-        (State::NeedLabel { name, mut slots }, Line::Label { text }) => {
+        (
+            State::NeedLabel {
+                name,
+                mut slots,
+                scope,
+            },
+            Line::Label { text },
+        ) => {
             let last = slots
                 .last_mut()
                 .expect("NeedLabel always has at least one slot");
             last.label = text;
-            *state = State::NeedNext { name, slots };
+            *state = State::NeedNext { name, slots, scope };
             FrameOutcome::Buffered
         }
 

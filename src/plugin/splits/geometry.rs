@@ -97,9 +97,16 @@ pub enum CheckpointKind {
 /// trigger polled by [`step`] each tick; `MapLoaded` matches the
 /// engine's `World.Name` on `on_new_map_loaded` via
 /// [`step_on_map_loaded`].
+///
+/// `Aabb.map` scopes the box to a specific world: `Some(name)` fires
+/// only while the player is on `name`; `None` is the section-0
+/// "starting map" sentinel resolved at runtime against
+/// `SplitsState.starting_map`. Sections are introduced on the wire by
+/// `LS map <name>` directives, which both push a `MapLoaded`
+/// checkpoint and change the AABB scope for subsequent `LS cp` lines.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Trigger {
-    Aabb(Aabb),
+    Aabb { aabb: Aabb, map: Option<String> },
     MapLoaded(String),
 }
 
@@ -119,15 +126,21 @@ pub struct Track {
 #[derive(Debug, Default)]
 pub struct SplitsState {
     pub track: Option<Track>,
+    /// The world name captured at the moment the track was loaded.
+    /// AABB checkpoints with `map: None` resolve against this — they
+    /// only fire while the player is on the same map they loaded the
+    /// track on.
+    pub starting_map: Option<String>,
     pub next_index: usize,
     pub fired: Vec<bool>,
     pub last_inside: Vec<bool>,
 }
 
 impl SplitsState {
-    pub fn load(&mut self, track: Track) {
+    pub fn load(&mut self, track: Track, starting_map: Option<String>) {
         let n = track.checkpoints.len();
         self.track = Some(track);
+        self.starting_map = starting_map;
         self.next_index = 0;
         self.fired = vec![false; n];
         self.last_inside = vec![false; n];
@@ -146,14 +159,16 @@ impl SplitsState {
     /// `load()`.
     pub fn unload(&mut self) {
         self.track = None;
+        self.starting_map = None;
         self.next_index = 0;
         self.fired.clear();
         self.last_inside.clear();
     }
 }
 
-/// Pure decision function: given the current state and the player position
-/// for this frame, advance the state and emit LiveSplit commands via `send`.
+/// Pure decision function: given the current state, the player position
+/// for this frame, and the engine's current `World.Name`, advance the
+/// state and emit LiveSplit commands via `send`.
 ///
 /// Rules:
 /// - Edge-triggered: a checkpoint only fires on the outside-to-inside
@@ -162,22 +177,37 @@ impl SplitsState {
 ///   a Split / End. A Start box is always eligible (entering one re-arms
 ///   the run latch).
 /// - One-shot: each box's `fired[i]` latches true until `rearm`.
-pub fn step<F: FnMut(Command)>(state: &mut SplitsState, pos: Vec3, mut send: F) {
+/// - Map-scoped: an `Aabb` cp with `map: Some(name)` only fires while
+///   `world == Some(name)`; an `Aabb` with `map: None` matches against
+///   `state.starting_map`. If either side is `None` the cp is skipped.
+pub fn step<F: FnMut(Command)>(
+    state: &mut SplitsState,
+    pos: Vec3,
+    world: Option<&str>,
+    mut send: F,
+) {
     let Some(track) = state.track.as_ref() else {
         return;
     };
+    let starting = state.starting_map.as_deref();
 
     let inside_now: Vec<bool> = track
         .checkpoints
         .iter()
         .map(|cp| match &cp.trigger {
-            Trigger::Aabb(aabb) => aabb.contains(pos),
+            Trigger::Aabb { aabb, map } => {
+                let target = map.as_deref().or(starting);
+                match (target, world) {
+                    (Some(t), Some(w)) if t == w => aabb.contains(pos),
+                    _ => false,
+                }
+            }
             Trigger::MapLoaded(_) => false,
         })
         .collect();
 
     for (i, cp) in track.checkpoints.iter().enumerate() {
-        if !matches!(cp.trigger, Trigger::Aabb(_)) {
+        if !matches!(cp.trigger, Trigger::Aabb { .. }) {
             continue;
         }
         let entered = inside_now[i] && !state.last_inside[i];

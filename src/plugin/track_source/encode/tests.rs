@@ -4,12 +4,25 @@ use super::*;
 use crate::plugin::splits::geometry::{Aabb, Checkpoint, CheckpointKind};
 
 fn cp(kind: CheckpointKind, min: (f32, f32, f32), max: (f32, f32, f32), label: &str) -> Checkpoint {
+    cp_on(kind, min, max, None, label)
+}
+
+fn cp_on(
+    kind: CheckpointKind,
+    min: (f32, f32, f32),
+    max: (f32, f32, f32),
+    map: Option<&str>,
+    label: &str,
+) -> Checkpoint {
     Checkpoint {
         kind,
-        trigger: Trigger::Aabb(Aabb {
-            min: Vec3::new(min.0, min.1, min.2),
-            max: Vec3::new(max.0, max.1, max.2),
-        }),
+        trigger: Trigger::Aabb {
+            aabb: Aabb {
+                min: Vec3::new(min.0, min.1, min.2),
+                max: Vec3::new(max.0, max.1, max.2),
+            },
+            map: map.map(str::to_string),
+        },
         label: label.into(),
     }
 }
@@ -310,10 +323,11 @@ fn mixed_aabb_and_map_interleave() {
         checkpoints: vec![
             cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
             cp_map(CheckpointKind::Split, "mid_map", "midmap"),
-            cp(
+            cp_on(
                 CheckpointKind::Split,
                 (20.0, 0.0, 0.0),
                 (22.0, 4.0, 2.0),
+                Some("mid_map"),
                 "s2",
             ),
             cp_map(CheckpointKind::End, "goal", "fin"),
@@ -388,4 +402,136 @@ fn rejects_overlong_map_name() {
         ],
     };
     assert!(encode_for_chat(&track).is_err());
+}
+
+// ---- AABB section scope ----
+
+#[test]
+fn rejects_aabb_with_map_scope_in_section_zero() {
+    // section-0 (before any MapLoaded) must hold AABBs with `map: None`.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp_on(
+                CheckpointKind::Start,
+                (0.0, 0.0, 0.0),
+                (2.0, 4.0, 2.0),
+                Some("x"),
+                "s",
+            ),
+            cp(CheckpointKind::End, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0), "e"),
+        ],
+    };
+    let err = encode_for_chat(&track).unwrap_err().to_string();
+    assert!(err.contains("section scope"), "{err}");
+}
+
+#[test]
+fn rejects_aabb_in_wrong_section() {
+    // AABB after `MapLoaded("b")` must declare `map: Some("b")`, not
+    // `Some("a")`.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp_map(CheckpointKind::Split, "b", "cross"),
+            cp_on(
+                CheckpointKind::End,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                Some("a"),
+                "wrong",
+            ),
+        ],
+    };
+    let err = encode_for_chat(&track).unwrap_err().to_string();
+    assert!(err.contains("section scope"), "{err}");
+}
+
+#[test]
+fn rejects_aabb_with_none_after_map_loaded() {
+    // After `MapLoaded("b")`, an AABB with `map: None` is also wrong
+    // — the scope is no longer the section-0 sentinel.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp_map(CheckpointKind::Split, "b", "cross"),
+            cp(
+                CheckpointKind::End,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "end-of-b",
+            ),
+        ],
+    };
+    let err = encode_for_chat(&track).unwrap_err().to_string();
+    assert!(err.contains("section scope"), "{err}");
+}
+
+#[test]
+fn user_example_round_trips_through_encoder() {
+    // The example from the design discussion: 3 section-0 AABBs,
+    // MapLoaded("mapname"), 3 section-1 AABBs (last → End).
+    let track = Track {
+        name: "Load Test".into(),
+        checkpoints: vec![
+            cp(
+                CheckpointKind::Start,
+                (0.0, 0.0, 0.0),
+                (2.0, 4.0, 2.0),
+                "Start CheckPoint",
+            ),
+            cp(
+                CheckpointKind::Split,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "Split A",
+            ),
+            cp(
+                CheckpointKind::Split,
+                (20.0, 0.0, 0.0),
+                (22.0, 4.0, 2.0),
+                "Split B",
+            ),
+            cp_map(CheckpointKind::Split, "mapname", "Map Name"),
+            cp_on(
+                CheckpointKind::Split,
+                (0.0, 0.0, 0.0),
+                (2.0, 4.0, 2.0),
+                Some("mapname"),
+                "Split C",
+            ),
+            cp_on(
+                CheckpointKind::Split,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                Some("mapname"),
+                "Split D",
+            ),
+            cp_on(
+                CheckpointKind::End,
+                (20.0, 0.0, 0.0),
+                (22.0, 4.0, 2.0),
+                Some("mapname"),
+                "Split E",
+            ),
+        ],
+    };
+    let lines = encode_for_chat(&track).unwrap();
+    assert_lines_within_cap(&lines);
+    assert_eq!(
+        lines,
+        vec![
+            "LS title Load Test",
+            "LS cp 0,0,0 2,4,2 Start CheckPoint",
+            "LS cp 10,0,0 2,4,2 Split A",
+            "LS cp 20,0,0 2,4,2 Split B",
+            "LS map mapname Map Name",
+            "LS cp 0,0,0 2,4,2 Split C",
+            "LS cp 10,0,0 2,4,2 Split D",
+            "LS cp 20,0,0 2,4,2 Split E",
+            "LS end",
+        ]
+    );
 }

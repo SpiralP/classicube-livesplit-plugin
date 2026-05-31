@@ -70,9 +70,24 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
     );
     lines.push(title);
 
+    // Running AABB section scope. Starts as `None` (the section-0
+    // "starting map" sentinel) and advances to `Some(name)` after each
+    // `MapLoaded` cp. AABB cps must declare a `map` equal to the
+    // running scope — sections can't be reopened mid-track without a
+    // fresh `LS map` checkpoint.
+    let mut scope: Option<&str> = None;
+
     for (i, cp) in track.checkpoints.iter().enumerate() {
         match &cp.trigger {
-            Trigger::Aabb(aabb) => {
+            Trigger::Aabb { aabb, map } => {
+                if map.as_deref() != scope {
+                    bail!(
+                        "checkpoint[{i}] AABB is on map {:?} but the current section scope is \
+                         {:?}; insert a MapLoaded checkpoint to switch sections first",
+                        map.as_deref(),
+                        scope,
+                    );
+                }
                 let (min, size) = aabb_to_min_size(*aabb)?;
                 let coords = format!(
                     "{},{},{} {},{},{}",
@@ -109,6 +124,11 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
                     "checkpoint[{i}] map name `{name}` contains a space; map names on the wire \
                      cannot contain spaces (the space delimits name from label)"
                 );
+
+                // Advance the running AABB scope before we emit. The
+                // MapLoaded line itself is also the section divider:
+                // subsequent `LS cp` lines must declare `map: Some(name)`.
+                scope = Some(name.as_str());
 
                 let inline = format!("LS map {name} {}", cp.label);
                 if inline.chars().count() <= MAX_LINE_CP {

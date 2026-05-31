@@ -48,8 +48,9 @@ impl SplitsModule {
                     return;
                 };
                 let pos = entity.get_position();
+                let world = read_world_name();
                 let mut state = state.borrow_mut();
-                step(&mut state, pos, livesplit::send);
+                step(&mut state, pos, world.as_deref(), livesplit::send);
             });
         }
         Self { state, _tick: tick }
@@ -113,7 +114,8 @@ pub fn load_fixture() {
     let track = fixture::loadtest();
     let n = track.checkpoints.len();
     let name = track.name.clone();
-    if with_state(|s| s.load(track)).is_none() {
+    let starting_map = read_world_name();
+    if with_state(|s| s.load(track, starting_map)).is_none() {
         chat_print("&eLiveSplit: plugin not active");
         return;
     }
@@ -129,7 +131,8 @@ pub fn load_fixture() {
 pub fn load_track(track: Track) -> bool {
     let n = track.checkpoints.len();
     let name = track.name.clone();
-    if with_state(|s| s.load(track)).is_none() {
+    let starting_map = read_world_name();
+    if with_state(|s| s.load(track, starting_map)).is_none() {
         return false;
     }
     chat_print(&format!(
