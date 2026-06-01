@@ -456,3 +456,224 @@ fn user_example_round_trips_through_encoder() {
         ]
     );
 }
+
+// ---- Pause / Resume checkpoints ----
+
+#[test]
+fn pause_and_unpause_checkpoints_emit_interleaved_with_splits() {
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp(
+                CheckpointKind::Pause,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "p",
+            ),
+            cp(
+                CheckpointKind::Resume,
+                (20.0, 0.0, 0.0),
+                (22.0, 4.0, 2.0),
+                "u",
+            ),
+            cp(CheckpointKind::End, (30.0, 0.0, 0.0), (32.0, 4.0, 2.0), "e"),
+        ],
+    };
+    let lines = encode_for_chat(&track).unwrap();
+    assert_lines_within_cap(&lines);
+    assert_eq!(
+        lines,
+        vec![
+            "LS title T",
+            "LS cp 0,0,0 2,4,2 s",
+            "LS pause 10,0,0 2,4,2 p",
+            "LS unpause 20,0,0 2,4,2 u",
+            "LS cp 30,0,0 2,4,2 e",
+            "LS end",
+        ]
+    );
+}
+
+#[test]
+fn cross_map_pause_via_map_loaded_between() {
+    // Pause on map A, MapLoaded to map B, Resume on map B. The scope
+    // walk in step() derives that the Resume AABB belongs to map B.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp(
+                CheckpointKind::Pause,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "p",
+            ),
+            cp_map(CheckpointKind::Split, "mapB", "transit"),
+            cp(
+                CheckpointKind::Resume,
+                (5.0, 0.0, 0.0),
+                (7.0, 4.0, 2.0),
+                "u",
+            ),
+            cp(CheckpointKind::End, (30.0, 0.0, 0.0), (32.0, 4.0, 2.0), "e"),
+        ],
+    };
+    let lines = encode_for_chat(&track).unwrap();
+    assert_lines_within_cap(&lines);
+    assert_eq!(
+        lines,
+        vec![
+            "LS title T",
+            "LS cp 0,0,0 2,4,2 s",
+            "LS pause 10,0,0 2,4,2 p",
+            "LS map mapB transit",
+            "LS unpause 5,0,0 2,4,2 u",
+            "LS cp 30,0,0 2,4,2 e",
+            "LS end",
+        ]
+    );
+}
+
+#[test]
+fn rejects_pause_with_map_trigger() {
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp_map(CheckpointKind::Pause, "mapB", "p"),
+            cp(CheckpointKind::End, (30.0, 0.0, 0.0), (32.0, 4.0, 2.0), "e"),
+        ],
+    };
+    assert!(encode_for_chat(&track).is_err());
+}
+
+#[test]
+fn rejects_resume_with_map_trigger() {
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp_map(CheckpointKind::Resume, "mapB", "u"),
+            cp(CheckpointKind::End, (30.0, 0.0, 0.0), (32.0, 4.0, 2.0), "e"),
+        ],
+    };
+    assert!(encode_for_chat(&track).is_err());
+}
+
+#[test]
+fn rejects_pause_at_index_zero() {
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Pause, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "p"),
+            cp(CheckpointKind::End, (30.0, 0.0, 0.0), (32.0, 4.0, 2.0), "e"),
+        ],
+    };
+    assert!(encode_for_chat(&track).is_err());
+}
+
+#[test]
+fn rejects_resume_at_last_index() {
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp(
+                CheckpointKind::Resume,
+                (30.0, 0.0, 0.0),
+                (32.0, 4.0, 2.0),
+                "u",
+            ),
+        ],
+    };
+    assert!(encode_for_chat(&track).is_err());
+}
+
+#[test]
+fn pause_label_falls_back_to_separate_line_when_inline_overflows() {
+    // Inline `LS pause 0,0,0 2,4,2 <label>` = 21 + label cp; cap 61 →
+    // label needs > 40 cp to overflow inline.
+    let label = "x".repeat(45);
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp(
+                CheckpointKind::Pause,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                &label,
+            ),
+            cp(
+                CheckpointKind::Resume,
+                (20.0, 0.0, 0.0),
+                (22.0, 4.0, 2.0),
+                "u",
+            ),
+            cp(CheckpointKind::End, (30.0, 0.0, 0.0), (32.0, 4.0, 2.0), "e"),
+        ],
+    };
+    let lines = encode_for_chat(&track).unwrap();
+    // title + cp(start) + (pause bare + label) + unpause + cp(end) + end
+    assert_eq!(lines.len(), 1 + 1 + 2 + 1 + 1 + 1);
+    assert_eq!(lines[2], "LS pause 10,0,0 2,4,2");
+    assert_eq!(lines[3], format!("LS label {label}"));
+    assert_lines_within_cap(&lines);
+}
+
+#[test]
+fn rejects_lone_pause_unbalanced() {
+    // Pause kind is AABB-only and at a valid middle index (passes
+    // structural validation), but no matching Resume → balance != 0 at
+    // End. validate_pause_resume_pairing should reject.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp(
+                CheckpointKind::Pause,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "p",
+            ),
+            cp(CheckpointKind::End, (30.0, 0.0, 0.0), (32.0, 4.0, 2.0), "e"),
+        ],
+    };
+    let err = encode_for_chat(&track).unwrap_err().to_string();
+    assert!(
+        err.contains("unmatched Pause"),
+        "unexpected error message: {err}"
+    );
+}
+
+#[test]
+fn rejects_resume_before_pause_unbalanced() {
+    // Resume at index 1 with no preceding Pause → balance would go
+    // negative. Structural check passes (Resume is AABB and at a valid
+    // middle position with Pause closing); validator catches it.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp(
+                CheckpointKind::Resume,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "u",
+            ),
+            cp(
+                CheckpointKind::Pause,
+                (20.0, 0.0, 0.0),
+                (22.0, 4.0, 2.0),
+                "p",
+            ),
+            cp(CheckpointKind::End, (30.0, 0.0, 0.0), (32.0, 4.0, 2.0), "e"),
+        ],
+    };
+    let err = encode_for_chat(&track).unwrap_err().to_string();
+    assert!(
+        err.contains("checkpoint[1]") && err.contains("Resume"),
+        "unexpected error message: {err}"
+    );
+}

@@ -17,9 +17,12 @@ use tracing::{debug, info};
 use crate::{
     chat_print,
     plugin::{
-        livesplit,
+        livesplit::{self, Command},
         module::Module,
-        splits::geometry::{CheckpointKind, SplitsState, Track, observe_map, step},
+        pause_triggers,
+        splits::geometry::{
+            CheckpointKind, SplitsState, Track, observe_map, step, validate_pause_resume_pairing,
+        },
     },
 };
 
@@ -84,19 +87,54 @@ impl SplitsModule {
                 // user-visible event).
                 let connected = livesplit::any_connected();
                 let snapshot = (!connected).then(|| (state.fired.clone(), state.next_index));
-                let mut any_fired = false;
-                let mut send = |cmd: Command| {
-                    any_fired = true;
+                // `any_fired` is shared between three closures
+                // (`send`, `on_pause`, `on_resume`) and they need to
+                // be live simultaneously while `step()` runs. A
+                // `Cell<bool>` sidesteps the multi-mutable-borrow
+                // conflict; `Cell` is fine in a thread-local context.
+                let any_fired = Cell::new(false);
+                let send = |cmd: Command| {
+                    any_fired.set(true);
                     if connected {
                         livesplit::send(cmd);
+                    }
+                };
+                // Pause/Resume kinds fire `Command::Split` via `send`
+                // (advancing the LSO segment cursor) AND call the
+                // pause-counter callbacks. Gate both on `connected`
+                // the same way: when disconnected, the disconnect
+                // snapshot rolls back `fired[]`/`next_index`, so a
+                // Pause/Resume checkpoint a player walked through
+                // without a timer attached doesn't bump the counter
+                // either. Edge state (`last_inside`, `last_seen_map`)
+                // still advances so re-entries work after reconnect.
+                let on_pause = || {
+                    any_fired.set(true);
+                    if connected {
+                        pause_triggers::pause_add();
+                    }
+                };
+                let on_resume = || {
+                    any_fired.set(true);
+                    if connected {
+                        pause_triggers::pause_sub();
                     }
                 };
                 // Map-change detection runs before the AABB walk so a
                 // `MapLoaded` Split / End advances `next_index` first;
                 // `step` then sees the updated cursor for the same tick.
-                observe_map(&mut state, world.as_deref(), &mut send);
-                step(&mut state, pos, world.as_deref(), &mut send);
-                if any_fired && let Some((fired, next_index)) = snapshot {
+                observe_map(&mut state, world.as_deref(), &send);
+                step(
+                    &mut state,
+                    pos,
+                    world.as_deref(),
+                    &send,
+                    on_pause,
+                    on_resume,
+                );
+                if any_fired.get()
+                    && let Some((fired, next_index)) = snapshot
+                {
                     state.fired = fired;
                     state.next_index = next_index;
                     drop(state);
@@ -175,6 +213,10 @@ fn with_state<R>(f: impl FnOnce(&mut SplitsState) -> R) -> Option<R> {
 
 pub fn load_fixture() {
     let track = fixture::loadtest();
+    if let Err(e) = validate_pause_resume_pairing(&track) {
+        chat_print(&format!("&cLiveSplit: fixture track invalid: {e}"));
+        return;
+    }
     let n = track.checkpoints.len();
     let name = track.name.clone();
     let starting_map = read_world_name();
@@ -196,6 +238,13 @@ pub fn load_fixture() {
 /// (track_source receiver) treats `false` as "don't suppress the
 /// source chat line — plugin isn't active to handle it."
 pub fn load_track(track: Track) -> bool {
+    if let Err(e) = validate_pause_resume_pairing(&track) {
+        // Mirror the chat-decoder error style. Return `false` so the
+        // chat-protocol receiver doesn't suppress the source line —
+        // failure to load = don't swallow the trigger.
+        chat_print(&format!("&cLiveSplit: refusing to load track: {e}"));
+        return false;
+    }
     let n = track.checkpoints.len();
     let name = track.name.clone();
     let starting_map = read_world_name();
@@ -268,6 +317,8 @@ pub fn print_status() {
                 let kind = match cp.kind {
                     CheckpointKind::Start => "Start",
                     CheckpointKind::Split => "Split",
+                    CheckpointKind::Pause => "Pause",
+                    CheckpointKind::Resume => "Resume",
                     CheckpointKind::End => "End",
                 };
                 let label = cp.label.as_str();

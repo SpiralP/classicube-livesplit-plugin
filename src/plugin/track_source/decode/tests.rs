@@ -685,11 +685,6 @@ fn map_inline_empty_label_errors() {
 #[test]
 fn user_example_round_trips() {
     let _g = fresh();
-    // The example from the design discussion: 3 section-0 AABBs,
-    // MapLoaded("mapname"), 3 section-1 AABBs (last → End). The
-    // section scope is no longer denormalized on each AABB — it's
-    // implied by the surrounding `MapLoaded` and walked at evaluation
-    // time, so all AABBs decode to a bare `Trigger::Aabb(aabb)`.
     let lines = [
         "LS title Load Test",
         "LS cp 0,0,0 2,4,2 Start CheckPoint",
@@ -748,4 +743,152 @@ fn user_example_round_trips() {
         ],
     };
     assert_eq!(decoded, expected);
+}
+
+// ---- Pause / Resume checkpoints ----
+
+#[test]
+fn pause_and_unpause_round_trip_via_encoder() {
+    let _g = fresh();
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp(
+                CheckpointKind::Pause,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "p",
+            ),
+            cp(
+                CheckpointKind::Resume,
+                (20.0, 0.0, 0.0),
+                (22.0, 4.0, 2.0),
+                "u",
+            ),
+            cp(CheckpointKind::End, (30.0, 0.0, 0.0), (32.0, 4.0, 2.0), "e"),
+        ],
+    };
+    let lines = encode_for_chat(&track).unwrap();
+    feed_all_but_last(&lines);
+    let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+    assert_eq!(decoded, track);
+}
+
+#[test]
+fn cross_map_pause_via_map_loaded_round_trip() {
+    let _g = fresh();
+    // Pause on starting map, MapLoaded to map B, Resume on map B.
+    // The scope walk in step() derives that the Resume AABB belongs
+    // to map B from the surrounding MapLoaded checkpoint.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp(
+                CheckpointKind::Pause,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "p",
+            ),
+            cp_map(CheckpointKind::Split, "mapB", "transit"),
+            cp(
+                CheckpointKind::Resume,
+                (5.0, 0.0, 0.0),
+                (7.0, 4.0, 2.0),
+                "u",
+            ),
+            cp(CheckpointKind::End, (30.0, 0.0, 0.0), (32.0, 4.0, 2.0), "e"),
+        ],
+    };
+    let lines = encode_for_chat(&track).unwrap();
+    feed_all_but_last(&lines);
+    let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+    assert_eq!(decoded, track);
+}
+
+#[test]
+fn pause_followup_label_round_trips() {
+    let _g = fresh();
+    // Bare `LS pause` line followed by `LS label` follow-up — the
+    // encoder's overflow fallback path. Closing `LS unpause` keeps
+    // the pairing validator happy.
+    let lines = [
+        "LS title T",
+        "LS cp 0,0,0 2,4,2 s",
+        "LS pause 10,0,0 2,4,2",
+        "LS label this pause has a follow-up label",
+        "LS unpause 20,0,0 2,4,2 u",
+        "LS cp 30,0,0 2,4,2 e",
+        "LS end",
+    ];
+    for line in &lines[..lines.len() - 1] {
+        assert_buffered(feed_chat_line(line));
+    }
+    let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+    assert_eq!(decoded.checkpoints[1].kind, CheckpointKind::Pause);
+    assert_eq!(
+        decoded.checkpoints[1].label,
+        "this pause has a follow-up label"
+    );
+}
+
+#[test]
+fn lone_pause_rejected_at_finalization() {
+    let _g = fresh();
+    // Well-formed frames structurally: Start cp, middle Pause, End cp.
+    // The pairing validator rejects on `LS end` because the Pause has
+    // no matching Resume.
+    let lines = [
+        "LS title T",
+        "LS cp 0,0,0 2,4,2 s",
+        "LS pause 10,0,0 2,4,2 p",
+        "LS cp 30,0,0 2,4,2 e",
+        "LS end",
+    ];
+    for line in &lines[..lines.len() - 1] {
+        assert_buffered(feed_chat_line(line));
+    }
+    let m = assert_parse_error(feed_chat_line(lines.last().unwrap()));
+    assert!(m.contains("unmatched Pause"), "{m}");
+    // Validator failure drops state to Idle so a fresh `LS title` is
+    // the recovery path.
+    STATE.with(|s| assert!(matches!(*s.borrow(), State::Idle)));
+}
+
+#[test]
+fn pause_before_title_errors() {
+    let _g = fresh();
+    let m = assert_parse_error(feed_chat_line("LS pause 50,0,0 2,4,2"));
+    assert!(m.contains("no `LS title`"), "{m}");
+}
+
+#[test]
+fn unpause_before_title_errors() {
+    let _g = fresh();
+    let m = assert_parse_error(feed_chat_line("LS unpause 50,0,0 2,4,2"));
+    assert!(m.contains("no `LS title`"), "{m}");
+}
+
+#[test]
+fn pause_as_first_checkpoint_errors() {
+    let _g = fresh();
+    assert_buffered(feed_chat_line("LS title T"));
+    // First checkpoint must be Start (cp/map line). `LS pause` would
+    // give it Pause kind; reject so the position-implicit Start at
+    // index 0 invariant holds.
+    let m = assert_parse_error(feed_chat_line("LS pause 0,0,0 2,4,2 p"));
+    assert!(m.contains("first checkpoint must be"), "{m}");
+}
+
+#[test]
+fn pause_as_last_checkpoint_errors() {
+    let _g = fresh();
+    // Sequence: title, cp(start), pause, end → reject because End
+    // promotion can only target Split kinds, not Pause/Resume.
+    assert_buffered(feed_chat_line("LS title T"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2 s"));
+    assert_buffered(feed_chat_line("LS pause 10,0,0 2,4,2 p"));
+    let m = assert_parse_error(feed_chat_line("LS end"));
+    assert!(m.contains("must be a plain checkpoint"), "{m}");
 }

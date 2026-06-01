@@ -41,6 +41,8 @@ pub struct PayloadCheckpoint {
 pub enum PayloadKind {
     Start,
     Split,
+    Pause,
+    Resume,
     End,
 }
 
@@ -60,7 +62,7 @@ pub enum PayloadTrigger {
 /// representation. Errors if any AABB extent exceeds 255 blocks or
 /// the position-implicit `CheckpointKind` sequence is violated
 /// (index 0 must be `Start`, last must be `End`, middle must be
-/// `Split` — same rule the chat encoder enforces).
+/// `Split` / `Pause` / `Resume`).
 pub fn serialize_canonical(track: &Track) -> Result<Vec<u8>> {
     let payload = track_to_payload(track)?;
     let bytes = serde_json::to_vec(&payload)?;
@@ -77,11 +79,19 @@ fn track_to_payload(track: &Track) -> Result<Payload> {
 
     let mut checkpoints = Vec::with_capacity(n);
     for (i, cp) in track.checkpoints.iter().enumerate() {
-        let expected_kind = expected_kind(i, n);
-        if cp.kind != expected_kind {
+        if !kind_valid_at(i, n, cp.kind) {
             bail!(
-                "checkpoint[{i}] kind is {:?}, expected {expected_kind:?} (index 0 = Start, last \
-                 = End, middle = Split)",
+                "checkpoint[{i}] kind is {:?}; expected Start at index 0, End at last index, and \
+                 Split/Pause/Resume in between",
+                cp.kind
+            );
+        }
+        if matches!(cp.kind, CheckpointKind::Pause | CheckpointKind::Resume)
+            && !matches!(cp.trigger, Trigger::Aabb(_))
+        {
+            bail!(
+                "checkpoint[{i}] is {:?} kind but trigger is not AABB; Pause/Resume kinds are \
+                 AABB-only",
                 cp.kind
             );
         }
@@ -108,13 +118,16 @@ fn track_to_payload(track: &Track) -> Result<Payload> {
     })
 }
 
-fn expected_kind(i: usize, n: usize) -> CheckpointKind {
+fn kind_valid_at(i: usize, n: usize, k: CheckpointKind) -> bool {
     if i == 0 {
-        CheckpointKind::Start
+        k == CheckpointKind::Start
     } else if i + 1 == n {
-        CheckpointKind::End
+        k == CheckpointKind::End
     } else {
-        CheckpointKind::Split
+        matches!(
+            k,
+            CheckpointKind::Split | CheckpointKind::Pause | CheckpointKind::Resume
+        )
     }
 }
 
@@ -122,6 +135,8 @@ fn kind_to_payload(k: CheckpointKind) -> PayloadKind {
     match k {
         CheckpointKind::Start => PayloadKind::Start,
         CheckpointKind::Split => PayloadKind::Split,
+        CheckpointKind::Pause => PayloadKind::Pause,
+        CheckpointKind::Resume => PayloadKind::Resume,
         CheckpointKind::End => PayloadKind::End,
     }
 }
@@ -130,6 +145,8 @@ fn kind_from_payload(k: &PayloadKind) -> CheckpointKind {
     match k {
         PayloadKind::Start => CheckpointKind::Start,
         PayloadKind::Split => CheckpointKind::Split,
+        PayloadKind::Pause => CheckpointKind::Pause,
+        PayloadKind::Resume => CheckpointKind::Resume,
         PayloadKind::End => CheckpointKind::End,
     }
 }
@@ -167,12 +184,11 @@ pub fn into_track(payload: Payload, labels: Vec<String>) -> Result<Track> {
 
     let mut checkpoints = Vec::with_capacity(n);
     for (i, (pcp, label)) in payload.checkpoints.into_iter().zip(labels).enumerate() {
-        let expected_kind = expected_kind(i, n);
         let parsed_kind = kind_from_payload(&pcp.kind);
-        if parsed_kind != expected_kind {
+        if !kind_valid_at(i, n, parsed_kind) {
             bail!(
-                "checkpoint[{i}] kind is {parsed_kind:?}, expected {expected_kind:?} (index 0 = \
-                 Start, last = End, middle = Split)"
+                "checkpoint[{i}] kind is {parsed_kind:?}; expected Start at index 0, End at last \
+                 index, and Split/Pause/Resume in between"
             );
         }
         let trigger = match pcp.trigger {
@@ -182,6 +198,14 @@ pub fn into_track(payload: Payload, labels: Vec<String>) -> Result<Track> {
                 Trigger::MapLoaded(name)
             }
         };
+        if matches!(parsed_kind, CheckpointKind::Pause | CheckpointKind::Resume)
+            && !matches!(trigger, Trigger::Aabb(_))
+        {
+            bail!(
+                "checkpoint[{i}] is {parsed_kind:?} kind but trigger is not AABB; Pause/Resume \
+                 kinds are AABB-only"
+            );
+        }
         let label = if label.trim().is_empty() {
             format!("split {i}")
         } else {

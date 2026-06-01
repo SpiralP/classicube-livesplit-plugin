@@ -6,6 +6,14 @@ fn v(x: f32, y: f32, z: f32) -> Vec3 {
     Vec3::new(x, y, z)
 }
 
+/// Test wrapper around `step()` for the bulk of the suite that doesn't
+/// exercise Pause/Resume kinds. Pass no-op `on_pause` / `on_resume`
+/// callbacks; tests that care about the pause-counter side effects
+/// call `step()` directly with real callbacks.
+fn tstep<F: FnMut(Command)>(state: &mut SplitsState, pos: Vec3, world: Option<&str>, send: F) {
+    step(state, pos, world, send, || {}, || {});
+}
+
 fn aabb(min: (f32, f32, f32), max: (f32, f32, f32)) -> Aabb {
     Aabb {
         min: v(min.0, min.1, min.2),
@@ -46,7 +54,7 @@ fn run(positions: &[Vec3]) -> Vec<Command> {
     state.load(linear_track(), Some(TEST_MAP.to_string()));
     let mut out = Vec::new();
     for p in positions {
-        step(&mut state, *p, Some(TEST_MAP), |c| out.push(c));
+        tstep(&mut state, *p, Some(TEST_MAP), |c| out.push(c));
     }
     out
 }
@@ -123,7 +131,7 @@ fn start_is_bundled_with_set_timing_method_and_initialize_game_time() {
     let mut state = SplitsState::default();
     state.load(linear_track(), Some(TEST_MAP.to_string()));
     let mut cmds = Vec::new();
-    step(&mut state, v(1.0, 1.0, 1.0), Some(TEST_MAP), |c| {
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some(TEST_MAP), |c| {
         cmds.push(c)
     });
     assert!(
@@ -223,7 +231,7 @@ fn reentering_start_rearms_the_run() {
         v(1.0, 1.0, 1.0),  // back to Start → re-arm
     ];
     for p in &positions {
-        step(&mut state, *p, Some(TEST_MAP), |c| cmds.push(c));
+        tstep(&mut state, *p, Some(TEST_MAP), |c| cmds.push(c));
     }
 
     assert_eq!(names(&cmds), vec!["Start", "Split", "Split", "Start"]);
@@ -235,7 +243,7 @@ fn reentering_start_rearms_the_run() {
 fn no_commands_when_no_track_loaded() {
     let mut state = SplitsState::default();
     let mut cmds = Vec::new();
-    step(&mut state, v(0.0, 0.0, 0.0), Some(TEST_MAP), |c| {
+    tstep(&mut state, v(0.0, 0.0, 0.0), Some(TEST_MAP), |c| {
         cmds.push(c)
     });
     assert!(cmds.is_empty());
@@ -245,8 +253,8 @@ fn no_commands_when_no_track_loaded() {
 fn rearm_clears_fired_and_resets_cursor() {
     let mut state = SplitsState::default();
     state.load(linear_track(), Some(TEST_MAP.to_string()));
-    step(&mut state, v(1.0, 1.0, 1.0), Some(TEST_MAP), |_| {});
-    step(&mut state, v(11.0, 1.0, 1.0), Some(TEST_MAP), |_| {});
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some(TEST_MAP), |_| {});
+    tstep(&mut state, v(11.0, 1.0, 1.0), Some(TEST_MAP), |_| {});
     assert_eq!(state.next_index, 2);
     assert_eq!(state.fired, vec![true, true, false, false]);
 
@@ -286,7 +294,7 @@ fn multi_map_route_progresses() {
     state.load(track, Some("a".to_string()));
     let mut cmds = Vec::new();
     step_on_map_loaded(&mut state, "a", |c| cmds.push(c)); // Start
-    step(&mut state, v(11.0, 1.0, 1.0), Some("a"), |c| cmds.push(c)); // middle Split (box)
+    tstep(&mut state, v(11.0, 1.0, 1.0), Some("a"), |c| cmds.push(c)); // middle Split (box)
     step_on_map_loaded(&mut state, "b", |c| cmds.push(c)); // End
     assert_eq!(names(&cmds), vec!["Start", "Split", "Split"]);
     assert_eq!(state.fired, vec![true, true, true]);
@@ -298,10 +306,10 @@ fn incidental_map_load_does_not_clear_run() {
     let mut state = SplitsState::default();
     state.load(linear_track(), Some(TEST_MAP.to_string()));
     let mut cmds = Vec::new();
-    step(&mut state, v(1.0, 1.0, 1.0), Some(TEST_MAP), |c| {
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some(TEST_MAP), |c| {
         cmds.push(c)
     }); // Start
-    step(&mut state, v(11.0, 1.0, 1.0), Some(TEST_MAP), |c| {
+    tstep(&mut state, v(11.0, 1.0, 1.0), Some(TEST_MAP), |c| {
         cmds.push(c)
     }); // Split₁
     assert_eq!(state.next_index, 2);
@@ -323,10 +331,10 @@ fn off_route_map_load_resets_in_progress_run() {
     let mut state = SplitsState::default();
     state.load(linear_track(), Some(TEST_MAP.to_string()));
     let mut cmds = Vec::new();
-    step(&mut state, v(1.0, 1.0, 1.0), Some(TEST_MAP), |c| {
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some(TEST_MAP), |c| {
         cmds.push(c)
     }); // Start
-    step(&mut state, v(11.0, 1.0, 1.0), Some(TEST_MAP), |c| {
+    tstep(&mut state, v(11.0, 1.0, 1.0), Some(TEST_MAP), |c| {
         cmds.push(c)
     }); // Split₁
     assert_eq!(state.next_index, 2);
@@ -391,7 +399,7 @@ fn mapload_checkpoint_map_is_on_route_even_if_not_yet_eligible() {
     let mut state = SplitsState::default();
     state.load(track, Some("home".to_string()));
     let mut cmds = Vec::new();
-    step(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
     assert_eq!(state.next_index, 1);
 
     // Skip past "mid" straight to "goal" — on-route (in MapLoaded set)
@@ -471,7 +479,7 @@ fn aabb_with_no_preceding_mapload_resolves_to_starting_map() {
     state.load(linear_track(), Some("home".to_string()));
     let mut cmds = Vec::new();
     // World matches the captured starting map → fires.
-    step(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c));
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c));
     assert_eq!(names(&cmds), vec!["Start"]);
 }
 
@@ -480,7 +488,7 @@ fn aabb_does_not_fire_on_different_world_than_starting_map() {
     let mut state = SplitsState::default();
     state.load(linear_track(), Some("home".to_string()));
     let mut cmds = Vec::new();
-    step(&mut state, v(1.0, 1.0, 1.0), Some("away"), |c| cmds.push(c));
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some("away"), |c| cmds.push(c));
     assert!(cmds.is_empty());
     assert_eq!(state.next_index, 0);
     assert_eq!(state.fired, vec![false; 4]);
@@ -492,7 +500,7 @@ fn aabb_skipped_when_world_is_none() {
     state.load(linear_track(), Some("home".to_string()));
     let mut cmds = Vec::new();
     // No world known yet (e.g. singleplayer pre-load); nothing fires.
-    step(&mut state, v(1.0, 1.0, 1.0), None, |c| cmds.push(c));
+    tstep(&mut state, v(1.0, 1.0, 1.0), None, |c| cmds.push(c));
     assert!(cmds.is_empty());
 }
 
@@ -501,7 +509,7 @@ fn aabb_skipped_when_starting_map_unset_and_no_preceding_mapload() {
     let mut state = SplitsState::default();
     state.load(linear_track(), None);
     let mut cmds = Vec::new();
-    step(&mut state, v(1.0, 1.0, 1.0), Some("anywhere"), |c| {
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some("anywhere"), |c| {
         cmds.push(c)
     });
     assert!(cmds.is_empty());
@@ -529,13 +537,13 @@ fn cross_map_aabb_route_only_fires_on_correct_sections() {
     let mut cmds = Vec::new();
 
     // Walk all three section-0 AABBs while on starting map.
-    step(&mut state, v(1.0, 1.0, 1.0), Some("starting"), |c| {
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some("starting"), |c| {
         cmds.push(c)
     });
-    step(&mut state, v(11.0, 1.0, 1.0), Some("starting"), |c| {
+    tstep(&mut state, v(11.0, 1.0, 1.0), Some("starting"), |c| {
         cmds.push(c)
     });
-    step(&mut state, v(21.0, 1.0, 1.0), Some("starting"), |c| {
+    tstep(&mut state, v(21.0, 1.0, 1.0), Some("starting"), |c| {
         cmds.push(c)
     });
     assert_eq!(names(&cmds), vec!["Start", "Split", "Split"]);
@@ -550,13 +558,13 @@ fn cross_map_aabb_route_only_fires_on_correct_sections() {
 
     // Now walking the section-1 AABBs (same coords as section 0) fires
     // the section-1 cps, not the section-0 ones.
-    step(&mut state, v(1.0, 1.0, 1.0), Some("mapname"), |c| {
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some("mapname"), |c| {
         cmds.push(c)
     });
-    step(&mut state, v(11.0, 1.0, 1.0), Some("mapname"), |c| {
+    tstep(&mut state, v(11.0, 1.0, 1.0), Some("mapname"), |c| {
         cmds.push(c)
     });
-    step(&mut state, v(21.0, 1.0, 1.0), Some("mapname"), |c| {
+    tstep(&mut state, v(21.0, 1.0, 1.0), Some("mapname"), |c| {
         cmds.push(c)
     });
     assert_eq!(
@@ -585,7 +593,7 @@ fn section1_aabb_does_not_fire_while_still_on_starting_map() {
     state.load(track, Some("home".to_string()));
     let mut cmds = Vec::new();
     // On "home": Start fires; End is scoped to "next", doesn't fire.
-    step(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c));
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c));
     assert_eq!(names(&cmds), vec!["Start"]);
     assert_eq!(state.next_index, 1);
 }
@@ -657,7 +665,7 @@ fn observe_map_fires_split_on_transition_to_mapload_target() {
     let mut state = SplitsState::default();
     state.load(track, Some("home".to_string()));
     let mut cmds = Vec::new();
-    step(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
     assert_eq!(state.next_index, 1);
 
     // A few ticks pass while tab-list still reports the old map — no
@@ -686,7 +694,7 @@ fn observe_map_repeated_observations_fire_once() {
     let mut state = SplitsState::default();
     state.load(track, Some("home".to_string()));
     let mut cmds = Vec::new();
-    step(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
 
     // First observation transitions home→goal: End fires once.
     observe_map(&mut state, Some("goal"), |c| cmds.push(c));
@@ -704,8 +712,8 @@ fn observe_map_off_route_warp_resets_in_progress_run() {
     let mut state = SplitsState::default();
     state.load(linear_track(), Some("home".to_string()));
     let mut cmds = Vec::new();
-    step(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
-    step(&mut state, v(11.0, 1.0, 1.0), Some("home"), |c| {
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
+    tstep(&mut state, v(11.0, 1.0, 1.0), Some("home"), |c| {
         cmds.push(c);
     }); // Split₁
     assert_eq!(state.next_index, 2);
@@ -715,4 +723,115 @@ fn observe_map_off_route_warp_resets_in_progress_run() {
     assert_eq!(state.next_index, 0);
     assert_eq!(state.fired, vec![false; 4]);
     assert_eq!(state.last_seen_map.as_deref(), Some("unrelated"));
+}
+
+// --- validate_pause_resume_pairing ---
+
+fn track_with_kinds(kinds: &[CheckpointKind]) -> Track {
+    // Geometry doesn't matter for the validator — only the `kind`
+    // sequence does — so reuse one AABB for every checkpoint.
+    let checkpoints = kinds
+        .iter()
+        .map(|k| cp(*k, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)))
+        .collect();
+    Track {
+        name: "validator-fixture".into(),
+        checkpoints,
+    }
+}
+
+#[test]
+fn validate_pairing_accepts_no_pause_resume() {
+    use CheckpointKind::{End, Split, Start};
+    let t = track_with_kinds(&[Start, Split, Split, End]);
+    validate_pause_resume_pairing(&t).unwrap();
+}
+
+#[test]
+fn validate_pairing_accepts_balanced_pair() {
+    use CheckpointKind::{End, Pause, Resume, Split, Start};
+    let t = track_with_kinds(&[Start, Pause, Split, Resume, End]);
+    validate_pause_resume_pairing(&t).unwrap();
+}
+
+#[test]
+fn validate_pairing_accepts_back_to_back_pairs() {
+    use CheckpointKind::{End, Pause, Resume, Start};
+    let t = track_with_kinds(&[Start, Pause, Resume, Pause, Resume, End]);
+    validate_pause_resume_pairing(&t).unwrap();
+}
+
+#[test]
+fn validate_pairing_accepts_nested_pairs() {
+    // Nesting (Pause, Pause, Resume, Resume) is allowed; the inner
+    // pair is a no-op on the counter's edge emissions.
+    use CheckpointKind::{End, Pause, Resume, Start};
+    let t = track_with_kinds(&[Start, Pause, Pause, Resume, Resume, End]);
+    validate_pause_resume_pairing(&t).unwrap();
+}
+
+#[test]
+fn validate_pairing_rejects_lone_pause() {
+    use CheckpointKind::{End, Pause, Start};
+    let t = track_with_kinds(&[Start, Pause, End]);
+    let err = validate_pause_resume_pairing(&t).unwrap_err().to_string();
+    assert!(
+        err.contains("unmatched Pause"),
+        "unexpected error message: {err}"
+    );
+}
+
+#[test]
+fn validate_pairing_rejects_lone_resume() {
+    use CheckpointKind::{End, Resume, Start};
+    let t = track_with_kinds(&[Start, Resume, End]);
+    let err = validate_pause_resume_pairing(&t).unwrap_err().to_string();
+    assert!(
+        err.contains("checkpoint[1]") && err.contains("Resume"),
+        "unexpected error message: {err}"
+    );
+}
+
+#[test]
+fn validate_pairing_rejects_resume_before_pause() {
+    use CheckpointKind::{End, Pause, Resume, Start};
+    let t = track_with_kinds(&[Start, Resume, Pause, End]);
+    let err = validate_pause_resume_pairing(&t).unwrap_err().to_string();
+    // The Resume at index 1 trips the balance-negative check before the
+    // (otherwise also broken) Pause at index 2 gets a chance to drift
+    // the counter.
+    assert!(
+        err.contains("checkpoint[1]"),
+        "expected first violation at index 1, got: {err}"
+    );
+}
+
+#[test]
+fn validate_pairing_error_names_first_violation() {
+    // Two unmatched Pauses; the message must blame the missing
+    // Resume on the End checkpoint with the count, not silently
+    // report only the last one.
+    use CheckpointKind::{End, Pause, Start};
+    let t = track_with_kinds(&[Start, Pause, Pause, End]);
+    let err = validate_pause_resume_pairing(&t).unwrap_err().to_string();
+    assert!(
+        err.contains("2 unmatched"),
+        "expected count in error, got: {err}"
+    );
+}
+
+#[test]
+fn unload_clears_pause_counter() {
+    use crate::plugin::pause_triggers;
+
+    pause_triggers::reset_counter();
+    pause_triggers::pause_add();
+    pause_triggers::pause_add();
+    assert_eq!(pause_triggers::current_counter(), 2);
+
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    state.unload();
+
+    assert_eq!(pause_triggers::current_counter(), 0);
 }

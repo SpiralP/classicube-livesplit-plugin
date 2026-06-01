@@ -10,7 +10,7 @@ use crate::{
         is_plugin_active,
         livesplit::{self, Command as LsCommand, protocol::TimingMethod},
         module::Module,
-        splits,
+        pause_triggers, splits,
         track_source::encode::encode_for_chat,
     },
 };
@@ -146,14 +146,26 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
             }
         }
         ["pause"] => {
-            if require_connected() {
-                livesplit::send(LsCommand::Pause);
-            }
+            // Manipulates the local game-time pause counter — same
+            // path as `CheckpointKind::Pause` AABB checkpoints and
+            // `PauseTriggersModule`'s map-load pause. `pause_add`
+            // emits `PauseGameTime` on the 0->1 counter edge; if a
+            // timer is connected it pauses game time, if not the
+            // counter still tracks so it stacks correctly with
+            // subsequent map-load / AABB pauses. Not gated on
+            // `require_connected()` because the counter is local
+            // plugin state.
+            pause_triggers::pause_add();
+            chat_print("&aLiveSplit: pause counter +1");
         }
         ["resume"] => {
-            if require_connected() {
-                livesplit::send(LsCommand::Resume);
-            }
+            // Symmetric inverse of `pause`. `pause_sub` saturates at
+            // 0 and emits `ResumeGameTime` on the 1->0 counter edge.
+            // If multiple pause sources are stacked (e.g. a Pause
+            // AABB plus a manual `pause`), the user may need to call
+            // `resume` multiple times to actually unpause.
+            pause_triggers::pause_sub();
+            chat_print("&aLiveSplit: pause counter -1");
         }
         ["reset"] => {
             splits::reset_run();

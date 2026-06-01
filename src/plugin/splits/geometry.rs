@@ -86,10 +86,20 @@ impl Aabb {
     }
 }
 
+/// What semantic role a checkpoint plays in the run.
+///
+/// `Start` and `End` are positional: index 0 must be `Start`, the last
+/// index must be `End`. Every middle checkpoint is one of `Split`,
+/// `Pause`, or `Resume`. All middle kinds advance the split cursor
+/// (`Command::Split`) on entry so the LiveSplit UI shows them as
+/// segments; `Pause` additionally bumps the pause counter via
+/// `pause_triggers::pause_add` and `Resume` drops it via `pause_sub`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckpointKind {
     Start,
     Split,
+    Pause,
+    Resume,
     End,
 }
 
@@ -103,6 +113,11 @@ pub enum CheckpointKind {
 /// `track.checkpoints[..i]`, falling back to
 /// `SplitsState.starting_map` when no `MapLoaded` precedes it. The
 /// box only fires while the player's world matches that scope.
+///
+/// Pause/Resume checkpoints are AABB-only; the cross-map case is
+/// expressed by placing a `Trigger::MapLoaded` checkpoint between
+/// the `Pause` and `Resume` AABBs (the scope walk then derives that
+/// the `Resume` AABB belongs to the post-transition map).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Trigger {
     Aabb(Aabb),
@@ -155,11 +170,14 @@ impl SplitsState {
     }
 
     /// Re-arm the run without unloading the track. Called on
-    /// `/client LiveSplit reset` and on `on_new_map_loaded`.
+    /// `/client LiveSplit reset` and on `on_new_map_loaded`. Also
+    /// zeroes the shared pause counter — a fresh attempt can't
+    /// inherit a stuck pause from a previous abandoned run.
     pub fn rearm(&mut self) {
         self.next_index = 0;
         self.fired.fill(false);
         self.last_inside.fill(false);
+        crate::plugin::pause_triggers::pause_clear_all();
     }
 
     /// Drop the loaded track and its per-checkpoint latches. After
@@ -172,30 +190,81 @@ impl SplitsState {
         self.next_index = 0;
         self.fired.clear();
         self.last_inside.clear();
+        // Mirror `rearm()`: dropping the track mid-pause shouldn't
+        // leak counter state into whatever replaces it. Without this,
+        // `/client LiveSplit clear` while a Pause AABB has fired
+        // leaves the counter stuck non-zero.
+        crate::plugin::pause_triggers::pause_clear_all();
     }
+}
+
+/// Walk the checkpoint list and assert that `Pause` / `Resume`
+/// checkpoints form a well-balanced sequence: the running balance never
+/// goes negative (no `Resume` without a preceding unmatched `Pause`),
+/// and the balance hits zero at `End` (a run can't terminate mid-pause).
+/// A track that violates either rule can strand the player game-time
+/// paused with no in-game escape short of `/client LiveSplit resume` or
+/// `reset`, so every track-entry gate (encoder, decoder finalization,
+/// `splits::load_*`) calls this before adopting the track.
+///
+/// Nesting (`Pause`, `Pause`, `Resume`, `Resume`) is accepted: the
+/// pause counter survives the inner pair as a no-op on `PauseGameTime`
+/// / `ResumeGameTime` emission. Structural invariants other than
+/// pairing (Pause/Resume must be AABB-only, position-implicit kind
+/// sequence) stay in `encode_for_chat`.
+pub fn validate_pause_resume_pairing(track: &Track) -> Result<()> {
+    let mut balance: i32 = 0;
+    for (i, cp) in track.checkpoints.iter().enumerate() {
+        match cp.kind {
+            CheckpointKind::Pause => balance += 1,
+            CheckpointKind::Resume => {
+                balance -= 1;
+                if balance < 0 {
+                    bail!(
+                        "checkpoint[{i}] is Resume but no preceding unmatched Pause (balance \
+                         would go negative)"
+                    );
+                }
+            }
+            CheckpointKind::End => {
+                if balance != 0 {
+                    bail!(
+                        "track ends with {balance} unmatched Pause checkpoint(s); add a Resume \
+                         before End"
+                    );
+                }
+            }
+            CheckpointKind::Start | CheckpointKind::Split => {}
+        }
+    }
+    Ok(())
 }
 
 /// Pure decision function: given the current state, the player position
 /// for this frame, and the engine's current `World.Name`, advance the
-/// state and emit LiveSplit commands via `send`.
+/// state and emit LiveSplit commands via `send`. Pause/Resume kinds
+/// additionally invoke `on_pause` / `on_resume` (wired to the
+/// `pause_triggers` counter at call sites).
 ///
 /// Rules:
 /// - Edge-triggered: a checkpoint only fires on the outside-to-inside
 ///   transition, not while the player stands still inside it.
 /// - Sequential: only `track.checkpoints[next_index]` is eligible to fire as
-///   a Split / End. A Start box is always eligible (entering one re-arms
-///   the run latch).
+///   a Split / Pause / Resume / End. A Start box is always eligible
+///   (entering one re-arms the run latch).
 /// - One-shot: each box's `fired[i]` latches true until `rearm`.
 /// - Map-scoped: an `Aabb` cp's scope is the world named by the most
 ///   recent preceding `Trigger::MapLoaded` in the checkpoint list, or
 ///   `state.starting_map` if none precedes it. The box only fires
 ///   while `world == Some(scope)`; if either side is `None` the cp is
 ///   skipped.
-pub fn step<F: FnMut(Command)>(
+pub fn step<F: FnMut(Command), P: FnMut(), R: FnMut()>(
     state: &mut SplitsState,
     pos: Vec3,
     world: Option<&str>,
     mut send: F,
+    mut on_pause: P,
+    mut on_resume: R,
 ) {
     let Some(track) = state.track.as_ref() else {
         return;
@@ -228,7 +297,17 @@ pub fn step<F: FnMut(Command)>(
 
         match cp.kind {
             CheckpointKind::Start => {
+                // Inline re-arm of all per-run state. Can't call
+                // `state.rearm()` here because `track` is held as an
+                // immutable borrow into `state`; field-level
+                // assignments work via split borrows but methods
+                // don't. The post-loop write of `inside_now` to
+                // `last_inside` overrides the zeroed edge state for
+                // this same tick (so a player standing inside Start
+                // at fire time doesn't re-trigger on the next tick).
                 state.fired.iter_mut().for_each(|b| *b = false);
+                state.last_inside.iter_mut().for_each(|b| *b = false);
+                crate::plugin::pause_triggers::pause_clear_all();
                 state.fired[i] = true;
                 state.next_index = i + 1;
                 send(Command::SetCurrentTimingMethod {
@@ -243,6 +322,18 @@ pub fn step<F: FnMut(Command)>(
                 state.fired[i] = true;
                 state.next_index = i + 1;
                 send(Command::Split);
+            }
+            CheckpointKind::Pause if i == state.next_index && !state.fired[i] => {
+                state.fired[i] = true;
+                state.next_index = i + 1;
+                send(Command::Split);
+                on_pause();
+            }
+            CheckpointKind::Resume if i == state.next_index && !state.fired[i] => {
+                state.fired[i] = true;
+                state.next_index = i + 1;
+                send(Command::Split);
+                on_resume();
             }
             _ => {}
         }
@@ -279,7 +370,9 @@ pub fn observe_map<F: FnMut(Command)>(state: &mut SplitsState, world: Option<&st
 
 /// Map-load counterpart of [`step`]. Sequential and one-shot rules
 /// match [`step`]: a Start always re-arms; Split/End only fire when
-/// `i == next_index`.
+/// `i == next_index`. Pause/Resume kinds are AABB-only and are
+/// ignored by this function (a `MapLoaded` trigger never carries a
+/// Pause/Resume kind in a valid track).
 ///
 /// Off-route guard: if `map_name` is neither `state.starting_map` nor
 /// the target of any `Trigger::MapLoaded` in the track, the player has
@@ -317,7 +410,12 @@ pub fn step_on_map_loaded<F: FnMut(Command)>(state: &mut SplitsState, map_name: 
 
         match cp.kind {
             CheckpointKind::Start => {
+                // Inline re-arm (see same comment in `step`). Borrow
+                // checker rejects `state.rearm()` while `track` is
+                // held immutably.
                 state.fired.iter_mut().for_each(|b| *b = false);
+                state.last_inside.iter_mut().for_each(|b| *b = false);
+                crate::plugin::pause_triggers::pause_clear_all();
                 state.fired[i] = true;
                 state.next_index = i + 1;
                 send(Command::SetCurrentTimingMethod {
@@ -333,6 +431,11 @@ pub fn step_on_map_loaded<F: FnMut(Command)>(state: &mut SplitsState, map_name: 
                 state.next_index = i + 1;
                 send(Command::Split);
             }
+            // Pause/Resume kinds are AABB-only; a MapLoaded trigger
+            // never carries them in a valid track. Skip rather than
+            // panic so an out-of-spec track loaded from chat or disk
+            // just no-ops instead of crashing the tick.
+            CheckpointKind::Pause | CheckpointKind::Resume => {}
             _ => {}
         }
     }

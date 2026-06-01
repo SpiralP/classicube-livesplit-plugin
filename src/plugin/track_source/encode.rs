@@ -3,7 +3,9 @@ mod tests;
 
 use anyhow::{Result, bail, ensure};
 
-use crate::plugin::splits::geometry::{CheckpointKind, Track, Trigger, aabb_to_min_size};
+use crate::plugin::splits::geometry::{
+    CheckpointKind, Track, Trigger, aabb_to_min_size, validate_pause_resume_pairing,
+};
 
 /// Maximum per-line length, in codepoints. ClassiCube's
 /// `INPUTWIDGET_LEN`/`STRING_SIZE` wrap point is 64; subtract 3 for the
@@ -19,18 +21,27 @@ pub(crate) const MAX_LINE_CP: usize = 64 - 3;
 ///
 /// Layout:
 ///   line[0]    = `LS title <name>`
-///   line[1..n] = per checkpoint, in order. AABB checkpoints emit
-///                `LS cp <min> <size> [label]`; map-loaded checkpoints
-///                emit `LS map <name> [label]`. Either form carries
-///                the label inline when it fits, otherwise the kind
+///   line[1..n] = per checkpoint, in order. Each checkpoint emits one
+///                of four keyword lines:
+///                  `LS cp <min> <size> [label]`      (Split, AABB)
+///                  `LS map <name> [label]`           (Split, MapLoaded)
+///                  `LS pause <min> <size> [label]`   (Pause, AABB)
+///                  `LS unpause <min> <size> [label]` (Resume, AABB)
+///                Start uses `LS cp` / `LS map` like a Split (position
+///                implies kind); End is the last checkpoint and uses
+///                whichever wire form (cp / map) its trigger demands.
+///                Labels are inline when they fit, otherwise the kind
 ///                line is emitted bare and followed by
-///                `LS label <text>`. Map names cannot contain a
-///                space (the first space delimits name from label);
-///                the encoder errors if the runtime `MapLoaded(name)`
-///                contains one.
-///   line[n+1]  = `LS end` terminator. The receiver promotes the
+///                `LS label <text>`. Map names cannot contain a space
+///                (the first space delimits name from label); the
+///                encoder errors if the runtime `MapLoaded(name)`
+///                contains one. Pause/Resume kinds are AABB-only; the
+///                encoder rejects `Trigger::MapLoaded` paired with
+///                them.
+///   line[-1]   = `LS end` terminator. The receiver promotes the
 ///                last buffered checkpoint's kind from `Split` to
-///                `End` on this line.
+///                `End` on this line (Pause/Resume can't be the last
+///                checkpoint; the encoder enforces this above).
 pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
     let n = track.checkpoints.len();
     ensure!(
@@ -40,17 +51,20 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
     ensure!(!track.name.trim().is_empty(), "track name is empty");
 
     for (i, cp) in track.checkpoints.iter().enumerate() {
-        let expected = if i == 0 {
-            CheckpointKind::Start
+        let valid = if i == 0 {
+            cp.kind == CheckpointKind::Start
         } else if i + 1 == n {
-            CheckpointKind::End
+            cp.kind == CheckpointKind::End
         } else {
-            CheckpointKind::Split
+            matches!(
+                cp.kind,
+                CheckpointKind::Split | CheckpointKind::Pause | CheckpointKind::Resume
+            )
         };
-        if cp.kind != expected {
+        if !valid {
             bail!(
-                "checkpoint[{i}] kind is {:?}, expected {expected:?} (index 0 = Start, last = \
-                 End, middle = Split)",
+                "checkpoint[{i}] kind is {:?}; expected Start at index 0, End at last index, and \
+                 Split/Pause/Resume in between",
                 cp.kind
             );
         }
@@ -58,7 +72,18 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
             !cp.label.trim().is_empty(),
             "checkpoint[{i}] label is empty (encoder requires non-empty labels)"
         );
+        if matches!(cp.kind, CheckpointKind::Pause | CheckpointKind::Resume)
+            && !matches!(cp.trigger, Trigger::Aabb(_))
+        {
+            bail!(
+                "checkpoint[{i}] is {:?} kind but trigger is not AABB; Pause/Resume kinds are \
+                 AABB-only",
+                cp.kind
+            );
+        }
     }
+
+    validate_pause_resume_pairing(track)?;
 
     let mut lines = Vec::with_capacity(2 + n);
 
@@ -71,6 +96,17 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
     lines.push(title);
 
     for (i, cp) in track.checkpoints.iter().enumerate() {
+        let keyword = match cp.kind {
+            CheckpointKind::Pause => "pause",
+            CheckpointKind::Resume => "unpause",
+            CheckpointKind::Start | CheckpointKind::Split | CheckpointKind::End => {
+                match &cp.trigger {
+                    Trigger::Aabb(_) => "cp",
+                    Trigger::MapLoaded(_) => "map",
+                }
+            }
+        };
+
         match &cp.trigger {
             Trigger::Aabb(aabb) => {
                 let (min, size) = aabb_to_min_size(*aabb)?;
@@ -79,17 +115,18 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
                     min[0], min[1], min[2], size[0], size[1], size[2]
                 );
 
-                let inline = format!("LS cp {coords} {}", cp.label);
+                let inline = format!("LS {keyword} {coords} {}", cp.label);
                 if inline.chars().count() <= MAX_LINE_CP {
                     lines.push(inline);
                     continue;
                 }
 
-                let bare = format!("LS cp {coords}");
+                let bare = format!("LS {keyword} {coords}");
                 let bare_cp = bare.chars().count();
                 ensure!(
                     bare_cp <= MAX_LINE_CP,
-                    "checkpoint[{i}] `cp` line without label is {bare_cp} cp; cap is {MAX_LINE_CP}"
+                    "checkpoint[{i}] `{keyword}` line without label is {bare_cp} cp; cap is \
+                     {MAX_LINE_CP}"
                 );
                 lines.push(bare);
 
@@ -110,17 +147,17 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
                      cannot contain spaces (the space delimits name from label)"
                 );
 
-                let inline = format!("LS map {name} {}", cp.label);
+                let inline = format!("LS {keyword} {name} {}", cp.label);
                 if inline.chars().count() <= MAX_LINE_CP {
                     lines.push(inline);
                     continue;
                 }
 
-                let bare = format!("LS map {name}");
+                let bare = format!("LS {keyword} {name}");
                 let bare_cp = bare.chars().count();
                 ensure!(
                     bare_cp <= MAX_LINE_CP,
-                    "checkpoint[{i}] `map` line without label is {bare_cp} cp; cap is \
+                    "checkpoint[{i}] `{keyword}` line without label is {bare_cp} cp; cap is \
                      {MAX_LINE_CP}"
                 );
                 lines.push(bare);
