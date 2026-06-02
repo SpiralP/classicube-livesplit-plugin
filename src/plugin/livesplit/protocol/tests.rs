@@ -115,8 +115,14 @@ fn line_reset_ignores_save_attempt() {
 }
 
 #[test]
-fn line_initialize_game_time_has_no_desktop_equivalent() {
-    assert!(Command::InitializeGameTime.to_line().is_none());
+fn line_initialize_game_time_maps_to_setgametime_zero() {
+    // The desktop has no `initgametime` command; it initializes game time
+    // as a side effect of `setgametime`, so this variant renders as
+    // `setgametime 0` (always emitted right after `Start`).
+    assert_eq!(
+        Command::InitializeGameTime.to_line().as_deref(),
+        Some("setgametime 0")
+    );
 }
 
 #[test]

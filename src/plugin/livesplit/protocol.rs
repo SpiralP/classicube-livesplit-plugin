@@ -20,8 +20,14 @@ pub enum Command {
     Resume,
     UndoSplit,
     SkipSplit,
-    // No desktop equivalent — the desktop initializes game time on first
-    // `setgametime`, so `to_line()` returns `None` for this variant.
+    // The desktop line protocol has no `initgametime` command — it
+    // initializes game time only as a side effect of `setgametime`
+    // (`CommandServer.cs:setgametime` -> `LiveSplitState.SetGameTime`,
+    // which sets `LoadingTimes` so `IsGameTimeInitialized` becomes true).
+    // So `to_line()` renders this as `setgametime 0`. It's only ever
+    // emitted immediately after `Start`, where the game-time origin is 0,
+    // and `setgametime` leaves `IsGameTimePaused` untouched — so it can't
+    // unpause an in-progress map-load pause window.
     InitializeGameTime,
     SetGameTime {
         time: TimeSpan,
@@ -63,8 +69,8 @@ impl TimingMethod {
 impl Command {
     /// Render as a single line for the LiveSplit desktop's legacy line
     /// protocol (`CommandServer.cs:ProcessMessage`). No trailing `\n` —
-    /// the caller adds the line terminator. Returns `None` for commands
-    /// with no desktop equivalent (currently only `InitializeGameTime`).
+    /// the caller adds the line terminator. The `Option` is retained for
+    /// any future JSON-only command, but no current variant returns `None`.
     pub fn to_line(&self) -> Option<String> {
         Some(match self {
             Self::Start => "start".into(),
@@ -75,7 +81,7 @@ impl Command {
             Self::Resume => "resume".into(),
             Self::UndoSplit => "undosplit".into(),
             Self::SkipSplit => "skipsplit".into(),
-            Self::InitializeGameTime => return None,
+            Self::InitializeGameTime => "setgametime 0".into(),
             Self::SetGameTime { time } => format!("setgametime {time}"),
             Self::PauseGameTime => "pausegametime".into(),
             Self::ResumeGameTime => "unpausegametime".into(),
