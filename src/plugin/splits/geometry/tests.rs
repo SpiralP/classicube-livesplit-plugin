@@ -887,6 +887,114 @@ fn aabbs_on_map_marks_next_index_respecting_scope() {
     );
 }
 
+// ---- append_index_for_section (bare `edit place` default target) ----
+
+#[test]
+fn append_index_single_map_appends_before_end() {
+    // No MapLoaded: a bare place always lands just before End (n - 1),
+    // the prior behavior.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+        ],
+    };
+    assert_eq!(
+        append_index_for_section(&track.checkpoints, Some("home"), Some("home")),
+        2,
+    );
+}
+
+#[test]
+fn append_index_first_section_inserts_before_its_maploaded() {
+    // Start | cp(A) | MapLoaded(B) | cp(B) | End, starting on A. Standing
+    // on A appends to A's section -- just before MapLoaded(B) at idx 2.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)), // 0
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // 1
+            cp_map(CheckpointKind::Split, "B"),                          // 2
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // 3
+            cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)), // 4
+        ],
+    };
+    assert_eq!(
+        append_index_for_section(&track.checkpoints, Some("A"), Some("A")),
+        2,
+        "appends at the end of A's section, before MapLoaded(B)",
+    );
+}
+
+#[test]
+fn append_index_last_section_appends_before_end() {
+    // Same track; standing on B (the last section, no following MapLoaded)
+    // appends before End at n - 1 = 4.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            cp_map(CheckpointKind::Split, "B"),
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+        ],
+    };
+    assert_eq!(
+        append_index_for_section(&track.checkpoints, Some("A"), Some("B")),
+        4,
+    );
+}
+
+#[test]
+fn append_index_off_route_or_unknown_world_appends_before_end() {
+    // A world matching no section -- and a None world -- both fall back to
+    // before End (n - 1), never refusing the placement.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            cp_map(CheckpointKind::Split, "B"),
+            cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+        ],
+    };
+    assert_eq!(
+        append_index_for_section(&track.checkpoints, Some("A"), Some("elsewhere")),
+        3,
+    );
+    assert_eq!(
+        append_index_for_section(&track.checkpoints, Some("A"), None),
+        3,
+    );
+}
+
+#[test]
+fn append_index_revisited_map_targets_first_section() {
+    // A -> B -> A. Standing on A targets the FIRST A section (before the
+    // first MapLoaded at idx 2); an explicit place <i> is the override for
+    // a later instance.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)), // 0, A
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // 1, A
+            cp_map(CheckpointKind::Split, "B"),                          // 2
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // 3, B
+            cp_map(CheckpointKind::Split, "A"),                          // 4
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // 5, A (revisit)
+            cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)), // 6
+        ],
+    };
+    assert_eq!(
+        append_index_for_section(&track.checkpoints, Some("A"), Some("A")),
+        2,
+        "first-match: appends to the earliest A section",
+    );
+}
+
 // ---- observe_map (tick-driven map-change detection) ----
 
 #[test]

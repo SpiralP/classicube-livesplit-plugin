@@ -638,6 +638,43 @@ pub fn aabbs_on_map(
     out
 }
 
+/// Index at which a bare `edit place` (no explicit target) should insert:
+/// the end of the section whose map name matches `world` -- just before
+/// that section's terminating `Trigger::MapLoaded` -- so a new checkpoint
+/// lands at the end of the map the player is currently standing on. Falls
+/// back to `n - 1` (append before `End`, the prior behavior) when the
+/// matched section is the last one (runs straight to `End`) or `world`
+/// matches no section. Mirrors the implicit-scope walk in [`aabbs_on_map`]:
+/// seed `current_map` from `starting_map`, advance on each `MapLoaded`.
+///
+/// First-match on a route that revisits a map name (`A -> B -> A`): the
+/// author uses an explicit `place <i>` to target a later instance, since
+/// there's no reliable in-world signal to pick between same-named sections
+/// during authoring (the run cursor is `0` whenever no run is in progress).
+#[must_use]
+pub(crate) fn append_index_for_section(
+    checkpoints: &[Checkpoint],
+    starting_map: Option<&str>,
+    world: Option<&str>,
+) -> usize {
+    let n = checkpoints.len();
+    // `in_target` tracks whether the section currently being walked matches
+    // `world`: seeded from `starting_map`, re-evaluated against each
+    // `MapLoaded`'s name as the walk advances.
+    let mut in_target = matches!((starting_map, world), (Some(t), Some(w)) if t == w);
+    for (i, cp) in checkpoints.iter().enumerate() {
+        if let Trigger::MapLoaded(name) = &cp.trigger {
+            if in_target {
+                // This MapLoaded closes the matched section: insert before it.
+                return i;
+            }
+            in_target = world == Some(name.as_str());
+        }
+    }
+    // Matched section is last, or no match: append before End.
+    n.saturating_sub(1)
+}
+
 /// Edge-trigger wrapper over [`step_on_map_loaded`] for tick-driven
 /// map-change detection. Compares the freshly-observed map name
 /// against `state.last_seen_map`; on a transition to a different

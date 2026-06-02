@@ -87,8 +87,9 @@ pub fn set_enabled(on: bool) {
 }
 
 /// `edit place [i]`. Arm a placement: the next two block clicks become a
-/// checkpoint's corners. `target` is `None` to append before End or
-/// `Some(i)` to insert at index `i`.
+/// checkpoint's corners. `target` is `None` to append to the player's
+/// current map section (before its terminating `MapLoaded`, or before
+/// `End` on the last/only map) or `Some(i)` to insert at index `i`.
 pub fn arm_place(target: Option<usize>) {
     let armed = EDITOR_STATE.with_borrow_mut(|s| {
         if !s.enabled {
@@ -105,7 +106,7 @@ pub fn arm_place(target: Option<usize>) {
         return;
     }
     match target {
-        None => chat_print("&aLiveSplit: armed - click corner A (appends before End)"),
+        None => chat_print("&aLiveSplit: armed - click corner A (appends to current map)"),
         Some(i) => chat_print(&format!(
             "&aLiveSplit: armed - click corner A (inserts at #{i})"
         )),

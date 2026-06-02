@@ -363,9 +363,30 @@ pub fn reset_timer_if_was_running(was_in_progress: bool) {
 /// re-arms the cursor to 0) so an aborted run can notify the timer.
 /// Chat-prints the outcome. `None` if the plugin is mid-teardown or the
 /// mutation failed.
+///
+/// A `None` `target` (bare `edit place`) resolves to the end of the
+/// player's current map section via `geometry::append_index_for_section`
+/// (just before that section's terminating `MapLoaded`, or before `End` on
+/// the last/only section). An explicit `Some(i)` is passed through verbatim
+/// for `insert_checkpoint` to clamp.
 pub fn editor_insert(aabb: Aabb, label: String, target: Option<usize>) -> Option<usize> {
     let was_in_progress = run_in_progress();
-    match with_state(|s| s.insert_checkpoint(aabb, label, target)) {
+    // Resolve the live world outside the borrow: `read_world_name()` reads
+    // the engine `World` static + tab-list, never `STATE` (same reason
+    // `visible_aabbs()` resolves it first).
+    let world = read_world_name();
+    match with_state(|s| {
+        let resolved = target.or_else(|| {
+            s.track.as_ref().map(|t| {
+                geometry::append_index_for_section(
+                    &t.checkpoints,
+                    s.starting_map.as_deref(),
+                    world.as_deref(),
+                )
+            })
+        });
+        s.insert_checkpoint(aabb, label, resolved)
+    }) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             None
