@@ -282,6 +282,38 @@ impl SplitsState {
         crate::plugin::pause_triggers::pause_clear_all();
     }
 
+    /// Walk the run cursor back one checkpoint in response to a timer-side
+    /// undo. Un-fires the checkpoint at `next_index - 1` and reverses its
+    /// pause side-effect (a Pause that bumped the counter on entry is
+    /// `pause_sub`'d; a Resume is `pause_add`'d). `last_inside[]` is left
+    /// untouched: if the player is still standing inside that box, edge
+    /// triggering keeps it from instantly re-firing until they exit and
+    /// re-enter (matching LiveSplit's "undo, then re-cross to re-split").
+    /// No-op when the run hasn't started (`next_index == 0`).
+    ///
+    /// Reaches `pause_triggers` directly, mirroring `rearm()` / `unload()`
+    /// (which call `pause_clear_all()` the same way). The timer can't undo
+    /// its first split (`CantUndoFirstSplit`), so `SplitUndone` never
+    /// arrives while `next_index == 1`; the `== 0` guard is the defensive
+    /// floor.
+    pub fn undo_one(&mut self) {
+        if self.next_index == 0 {
+            return;
+        }
+        let i = self.next_index - 1;
+        self.next_index = i;
+        if let Some(f) = self.fired.get_mut(i) {
+            *f = false;
+        }
+        if let Some(cp) = self.track.as_ref().and_then(|t| t.checkpoints.get(i)) {
+            match cp.kind {
+                CheckpointKind::Pause => crate::plugin::pause_triggers::pause_sub(),
+                CheckpointKind::Resume => crate::plugin::pause_triggers::pause_add(),
+                _ => {}
+            }
+        }
+    }
+
     /// Drop the loaded track and its per-checkpoint latches. After
     /// this, `step()` short-circuits (no `track`) until a new
     /// `load()`.

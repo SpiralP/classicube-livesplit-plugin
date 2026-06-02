@@ -17,7 +17,7 @@ use tracing::{debug, info};
 use crate::{
     chat_print,
     plugin::{
-        livesplit::{self, Command},
+        livesplit::{self, Command, TimerEvent},
         module::Module,
         pause_triggers,
         splits::geometry::{
@@ -344,6 +344,34 @@ pub fn starting_map() -> Option<String> {
 
 pub fn reset_run() {
     with_state(SplitsState::rearm);
+}
+
+/// Apply a timer-originated event (from the LSO read loop, hopped to the
+/// main thread). `Reset` re-arms; `SplitUndone` walks the cursor back one.
+/// Forward auto-events never reach here (filtered in `TimerEvent::from_wire`).
+///
+/// This funnels UI button / hotkey / chat `undosplit` through one path: the
+/// chat `undosplit` arm only sends `Command::UndoSplit` and leaves the cursor
+/// alone, so the echoed `SplitUndone` drives the walk-back for free. Degrades
+/// to a no-op if the plugin is mid-teardown (`with_state` returns `None`).
+pub fn on_timer_event(ev: TimerEvent) {
+    match ev {
+        TimerEvent::Reset => reset_run(),
+        TimerEvent::SplitUndone => {
+            let walked = with_state(|s| {
+                let before = s.next_index;
+                s.undo_one();
+                (before, s.next_index)
+            });
+            if let Some((before, after)) = walked
+                && before != after
+            {
+                chat_print(&format!(
+                    "&eLiveSplit: timer undid split; cursor #{before} -> #{after}"
+                ));
+            }
+        }
+    }
 }
 
 /// Tell a connected timer to reset after a load / structural edit

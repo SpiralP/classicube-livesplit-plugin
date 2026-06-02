@@ -169,6 +169,27 @@ fn ts(d: Duration) -> String {
 }
 
 #[test]
+fn timer_event_from_wire_maps_backward_events() {
+    assert_eq!(
+        TimerEvent::from_wire("SplitUndone"),
+        Some(TimerEvent::SplitUndone)
+    );
+    assert_eq!(TimerEvent::from_wire("Reset"), Some(TimerEvent::Reset));
+}
+
+#[test]
+fn timer_event_from_wire_ignores_forward_and_unknown_events() {
+    // Forward auto-events are echoes of our own geometry-driven commands;
+    // acting on them would double-advance the cursor, so they parse to
+    // `None`. Unknown strings are likewise dropped.
+    assert_eq!(TimerEvent::from_wire("Splitted"), None);
+    assert_eq!(TimerEvent::from_wire("Started"), None);
+    assert_eq!(TimerEvent::from_wire("Finished"), None);
+    assert_eq!(TimerEvent::from_wire("SomethingNew"), None);
+    assert_eq!(TimerEvent::from_wire(""), None);
+}
+
+#[test]
 fn timespan_zero() {
     assert_eq!(ts(Duration::ZERO), "0.000000000");
 }

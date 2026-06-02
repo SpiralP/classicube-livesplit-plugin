@@ -18,7 +18,10 @@ use tracing::debug;
 
 #[cfg(windows)]
 pub use crate::plugin::livesplit::client::PIPE_NAME as CLIENT_PIPE_NAME;
-pub use crate::plugin::livesplit::{protocol::Command, server::BIND_ADDR as SERVER_BIND_ADDR};
+pub use crate::plugin::livesplit::{
+    protocol::{Command, TimerEvent},
+    server::BIND_ADDR as SERVER_BIND_ADDR,
+};
 use crate::plugin::module::Module;
 
 const BROADCAST_CAPACITY: usize = 64;

@@ -1660,3 +1660,120 @@ fn format_splits_lists_each_checkpoint_with_markers() {
         ]
     );
 }
+
+// ---- undo_one (timer-side undo walk-back) ----
+
+#[test]
+fn undo_one_on_split_decrements_clears_fired_keeps_last_inside() {
+    use crate::plugin::pause_triggers;
+
+    pause_triggers::reset_counter();
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    // Pretend a run advanced past the first Split (index 1): cursor on 2,
+    // both Start and Split #1 fired. Seed `last_inside[1]` true to prove
+    // undo leaves it alone (so a player still standing inside won't
+    // instantly re-fire it).
+    state.next_index = 2;
+    state.fired = vec![true, true, false, false];
+    state.last_inside = vec![false, true, false, false];
+
+    state.undo_one();
+
+    assert_eq!(state.next_index, 1, "cursor walks back one");
+    assert!(!state.fired[1], "the undone checkpoint is un-fired");
+    assert!(state.fired[0], "earlier fired checkpoints are untouched");
+    assert!(state.last_inside[1], "last_inside[] is left untouched");
+    assert_eq!(
+        pause_triggers::current_counter(),
+        0,
+        "a plain Split undo doesn't touch the pause counter"
+    );
+}
+
+#[test]
+fn undo_one_across_pause_pause_subs() {
+    use CheckpointKind::{End, Pause, Resume, Start};
+
+    use crate::plugin::pause_triggers;
+
+    pause_triggers::reset_counter();
+    let mut state = SplitsState::default();
+    // [Start, Pause, Resume, End]; undo the Pause at index 1.
+    state.load(track_with_kinds(&[Start, Pause, Resume, End]), None);
+    // Run sits just past the Pause (it fired, counter went up to 1).
+    state.next_index = 2;
+    state.fired = vec![true, true, false, false];
+    pause_triggers::pause_add();
+    assert_eq!(pause_triggers::current_counter(), 1);
+
+    state.undo_one();
+
+    assert_eq!(state.next_index, 1);
+    assert!(!state.fired[1]);
+    assert_eq!(
+        pause_triggers::current_counter(),
+        0,
+        "undoing a Pause reverses its pause_add via pause_sub (1->0 edge)"
+    );
+}
+
+#[test]
+fn undo_one_across_resume_pause_adds() {
+    use CheckpointKind::{End, Pause, Resume, Start};
+
+    use crate::plugin::pause_triggers;
+
+    pause_triggers::reset_counter();
+    let mut state = SplitsState::default();
+    // [Start, Pause, Resume, End]; undo the Resume at index 2.
+    state.load(track_with_kinds(&[Start, Pause, Resume, End]), None);
+    // Run sits just past the Resume (it fired, dropping the counter to 0).
+    state.next_index = 3;
+    state.fired = vec![true, true, true, false];
+    assert_eq!(pause_triggers::current_counter(), 0);
+
+    state.undo_one();
+
+    assert_eq!(state.next_index, 2);
+    assert!(!state.fired[2]);
+    assert_eq!(
+        pause_triggers::current_counter(),
+        1,
+        "undoing a Resume reverses its pause_sub via pause_add (0->1 edge)"
+    );
+}
+
+#[test]
+fn undo_one_at_zero_is_noop() {
+    use crate::plugin::pause_triggers;
+
+    pause_triggers::reset_counter();
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    // Fresh run: cursor at 0, nothing fired.
+    assert_eq!(state.next_index, 0);
+
+    state.undo_one();
+
+    assert_eq!(state.next_index, 0, "no underflow below the run start");
+    assert_eq!(state.fired, vec![false, false, false, false]);
+    assert_eq!(pause_triggers::current_counter(), 0);
+}
+
+#[test]
+fn undo_one_twice_walks_back_two_checkpoints() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    // Cursor past both Splits (index 3, the End slot pending).
+    state.next_index = 3;
+    state.fired = vec![true, true, true, false];
+
+    state.undo_one();
+    state.undo_one();
+
+    assert_eq!(state.next_index, 1, "two undos walk back two checkpoints");
+    assert!(state.fired[0], "only the two most recent are un-fired");
+    assert!(!state.fired[1]);
+    assert!(!state.fired[2]);
+}

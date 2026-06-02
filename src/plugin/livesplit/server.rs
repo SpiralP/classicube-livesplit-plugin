@@ -27,7 +27,13 @@ use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, error, info, trace, warn};
 use tungstenite::Message;
 
-use crate::{chat_print_async, plugin::livesplit::protocol::Command};
+use crate::{
+    chat_print_async,
+    plugin::{
+        livesplit::protocol::{Command, TimerEvent},
+        splits,
+    },
+};
 
 pub const BIND_ADDR: &str = "127.0.0.1:16833";
 
@@ -215,6 +221,18 @@ async fn read_loop(mut read: WsStream, tx: mpsc::UnboundedSender<Response>) {
                     }
                     Ok(ServerResponse::Event { event }) => {
                         info!(%event, "LiveSplit event");
+                        // Hop the actionable events to the main thread: the
+                        // read loop runs on a tokio worker thread, but
+                        // `SplitsState` and the pause counter are main-thread
+                        // thread-locals. `TimerEvent` is a small `Copy` enum,
+                        // so the spawned future is `Send`. Forward auto-events
+                        // (echoes of our own geometry-driven commands) parse to
+                        // `None` and are dropped here -- see `TimerEvent`.
+                        if let Some(ev) = TimerEvent::from_wire(&event) {
+                            async_manager::spawn_on_main_thread(async move {
+                                splits::on_timer_event(ev);
+                            });
+                        }
                     }
                     Err(e) => {
                         warn!(error = %e, raw = %t.as_str(), "ls inbound parse failed");

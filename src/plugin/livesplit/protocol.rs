@@ -44,6 +44,33 @@ pub enum Command {
     Ping,
 }
 
+/// An inbound timer-originated event we choose to act on. LiveSplit pushes
+/// `{"event": "<name>"}` frames for every state change (see livesplit-core's
+/// `Event` enum in `src/networking/server_protocol.rs`, which has no
+/// `rename_all` so the wire strings are the bare PascalCase variant names:
+/// `"SplitUndone"`, `"Reset"`, `"Started"`, ...). We only react to the two
+/// *backward* events; the forward auto-events are echoes of our own
+/// geometry-driven commands and acting on them would double-advance the
+/// cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimerEvent {
+    SplitUndone,
+    Reset,
+}
+
+impl TimerEvent {
+    /// Parse the inbound `{"event": "<name>"}` payload string. Returns
+    /// `None` for events we deliberately ignore (forward auto-events are
+    /// echoes of our own commands; acting on them would double-advance).
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "SplitUndone" => Some(Self::SplitUndone),
+            "Reset" => Some(Self::Reset),
+            _ => None,
+        }
+    }
+}
+
 /// Matches livesplit-core's `TimingMethod` enum byte-for-byte on the wire
 /// (variants serialize as the bare PascalCase names, `"RealTime"` /
 /// `"GameTime"`), so the JSON command shape exactly mirrors
