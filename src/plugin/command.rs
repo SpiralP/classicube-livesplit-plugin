@@ -49,7 +49,8 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit show [on|off]    (toggle checkpoint HUD)");
     chat_print("&e  /client LiveSplit edit on|off");
     chat_print("&e  /client LiveSplit edit place [i] | cancel | select <i>");
-    chat_print("&e  /client LiveSplit edit delete [i] | label <i> <text> | clear");
+    chat_print("&e  /client LiveSplit edit delete [i] | move <from> <to>");
+    chat_print("&e  /client LiveSplit edit label <i> <text> | clear");
     chat_print("&e  /client LiveSplit track encode");
     chat_print("&e  /client LiveSplit mb <subcmd ...>  (one chained /mb to deliver all lines)");
     chat_print(
@@ -246,6 +247,13 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                 editor::delete(Some(idx));
             }
         }
+        ["edit", "move", from, to] => {
+            if let Some(f) = parse_index(from)
+                && let Some(t) = parse_index(to)
+            {
+                editor::reindex(f, t);
+            }
+        }
         ["edit", "label", i, rest @ ..] if !rest.is_empty() => {
             if let Some(idx) = parse_index(i) {
                 editor::set_label(idx, rest.join(" "));
@@ -331,7 +339,8 @@ impl CommandModule {
                     "&a/client LiveSplit load [filename]",
                     "&a/client LiveSplit show [on|off]",
                     "&a/client LiveSplit edit on|off | place [i] | cancel | select <i>",
-                    "&a/client LiveSplit edit delete [i] | label <i> <text> | clear",
+                    "&a/client LiveSplit edit delete [i] | move <from> <to>",
+                    "&a/client LiveSplit edit label <i> <text> | clear",
                     "&a/client LiveSplit track encode",
                     "&a/client LiveSplit mb <subcmd ...>",
                     "&a/client LiveSplit nas",

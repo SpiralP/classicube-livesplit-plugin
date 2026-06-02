@@ -404,6 +404,36 @@ pub fn editor_delete(i: usize) -> bool {
     }
 }
 
+/// Reorder: move the checkpoint at `from` to index `to`. Like
+/// [`editor_insert`], samples run-progress before mutating and notifies a
+/// connected timer if it aborted a run. `from == to` is a friendly no-op
+/// (the mutator is pure remove+insert, so the guard lives here). Returns
+/// `true` on success.
+pub fn editor_reindex(from: usize, to: usize) -> bool {
+    if from == to {
+        chat_print(&format!(
+            "&eLiveSplit: checkpoint #{from} is already at index #{to}"
+        ));
+        return false;
+    }
+    let was_in_progress = run_in_progress();
+    match with_state(|s| s.move_checkpoint(from, to)) {
+        None => {
+            chat_print("&eLiveSplit: plugin not active");
+            false
+        }
+        Some(Err(e)) => {
+            chat_print(&format!("&cLiveSplit: cannot move checkpoint: {e}"));
+            false
+        }
+        Some(Ok(())) => {
+            reset_timer_if_was_running(was_in_progress);
+            chat_print(&format!("&aLiveSplit: moved checkpoint #{from} to #{to}"));
+            true
+        }
+    }
+}
+
 /// Relabel the checkpoint at `i`. Non-structural, so it never re-arms
 /// the run or touches the timer. Returns `true` on success.
 pub fn editor_set_label(i: usize, text: String) -> bool {

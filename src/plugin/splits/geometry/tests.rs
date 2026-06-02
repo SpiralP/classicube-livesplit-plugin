@@ -1327,3 +1327,113 @@ fn expected_kind_boundaries() {
     // over the last-index branch).
     assert_eq!(expected_kind(0, 1), Start);
 }
+
+#[test]
+fn move_checkpoint_reorders_middle_preserving_pause_resume() {
+    use CheckpointKind::{End, Pause, Resume, Split, Start};
+    let mut state = SplitsState::default();
+    state.load(
+        track_with_kinds(&[Start, Pause, Split, Resume, End]),
+        Some(TEST_MAP.to_string()),
+    );
+    // Move the middle Split (idx 2) to idx 1; Pause/Resume stay balanced.
+    state.move_checkpoint(2, 1).unwrap();
+    assert_eq!(kinds(&state), vec![Start, Split, Pause, Resume, End]);
+}
+
+#[test]
+fn move_checkpoint_into_start_slot_promotes_and_demotes() {
+    use CheckpointKind::{End, Split, Start};
+    // Distinct AABBs so we can confirm geometry moved, not just kinds.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(Start, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),   // A
+            cp(Split, (10.0, 0.0, 0.0), (11.0, 1.0, 1.0)), // B
+            cp(Split, (20.0, 0.0, 0.0), (21.0, 1.0, 1.0)), // C
+            cp(End, (30.0, 0.0, 0.0), (31.0, 1.0, 1.0)),   // D
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some(TEST_MAP.to_string()));
+    // Move C (idx 2) to idx 0: C becomes the new Start, the old Start (A)
+    // is stranded in the middle and demoted to Split.
+    state.move_checkpoint(2, 0).unwrap();
+    assert_eq!(kinds(&state), vec![Start, Split, Split, End]);
+    let t = state.track.as_ref().unwrap();
+    assert!(
+        matches!(&t.checkpoints[0].trigger, Trigger::Aabb(b) if *b == aabb((20.0, 0.0, 0.0), (21.0, 1.0, 1.0))),
+        "C's geometry moved into the Start slot",
+    );
+}
+
+#[test]
+fn move_checkpoint_out_of_start_demotes_old_start() {
+    use CheckpointKind::{End, Split, Start};
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(Start, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),   // A
+            cp(Split, (10.0, 0.0, 0.0), (11.0, 1.0, 1.0)), // B
+            cp(Split, (20.0, 0.0, 0.0), (21.0, 1.0, 1.0)), // C
+            cp(End, (30.0, 0.0, 0.0), (31.0, 1.0, 1.0)),   // D
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some(TEST_MAP.to_string()));
+    // Move the Start (A, idx 0) into the middle (idx 2): B promotes to
+    // Start, A demotes to Split.
+    state.move_checkpoint(0, 2).unwrap();
+    assert_eq!(kinds(&state), vec![Start, Split, Split, End]);
+    let t = state.track.as_ref().unwrap();
+    assert!(
+        matches!(&t.checkpoints[0].trigger, Trigger::Aabb(b) if *b == aabb((10.0, 0.0, 0.0), (11.0, 1.0, 1.0))),
+        "B's geometry is the new Start",
+    );
+    assert!(
+        matches!(&t.checkpoints[2].trigger, Trigger::Aabb(b) if *b == aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))),
+        "the old Start's geometry sits at idx 2, demoted to Split",
+    );
+}
+
+#[test]
+fn move_checkpoint_rejects_pairing_inversion_and_rolls_back() {
+    use CheckpointKind::{End, Pause, Resume, Start};
+    let mut state = SplitsState::default();
+    state.load(
+        track_with_kinds(&[Start, Pause, Resume, End]),
+        Some(TEST_MAP.to_string()),
+    );
+    // Dragging the Resume (idx 2) before its Pause (to idx 1) would make
+    // the running balance go negative -> rejected, track left untouched.
+    assert!(state.move_checkpoint(2, 1).is_err());
+    assert_eq!(kinds(&state), vec![Start, Pause, Resume, End]);
+}
+
+#[test]
+fn move_checkpoint_rearms_run() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    tstep(&mut state, v(1.0, 1.0, 1.0), Some(TEST_MAP), |_| {}); // Start
+    tstep(&mut state, v(11.0, 1.0, 1.0), Some(TEST_MAP), |_| {}); // Split₁
+    assert_eq!(state.next_index, 2);
+
+    state.move_checkpoint(1, 2).unwrap();
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false; 4]);
+    assert_eq!(state.last_inside, vec![false; 4]);
+}
+
+#[test]
+fn move_checkpoint_out_of_range_errors() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    assert!(state.move_checkpoint(99, 1).is_err());
+    assert!(state.move_checkpoint(1, 99).is_err());
+}
+
+#[test]
+fn move_checkpoint_errors_without_track() {
+    let mut state = SplitsState::default();
+    assert!(state.move_checkpoint(0, 1).is_err());
+}

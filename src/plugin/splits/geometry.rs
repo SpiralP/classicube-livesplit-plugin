@@ -322,6 +322,57 @@ impl SplitsState {
         Ok(())
     }
 
+    /// Move the checkpoint at `from` to index `to`, shifting the
+    /// checkpoints between them. Equivalent to `remove(from)` then
+    /// `insert(to, cp)`: the moved checkpoint ends at final index `to`
+    /// and everything from `to` onward shifts up by one. Boundary slots
+    /// are **not** locked -- after the shift the kinds are re-derived
+    /// (`re_derive_kinds`: idx 0 -> `Start`, last -> `End`, a former
+    /// boundary stranded in the middle demoted to `Split`), so a middle
+    /// checkpoint moved to a boundary adopts the boundary kind and a
+    /// former `Start`/`End` moved inward becomes a `Split`. Reordering can
+    /// invert a `Pause`/`Resume` pair, so the post-move track is validated
+    /// against [`validate_pause_resume_pairing`]; on failure the move is
+    /// rolled back and `Err` returned (unlike `insert`/`delete`, which
+    /// defer pairing checks to the load-entry gates -- reordering is the
+    /// operation most likely to invert a pair). On success the latches are
+    /// reallocated and the run re-armed to index 0. `Err` if no track is
+    /// loaded or either index is out of range.
+    pub fn move_checkpoint(&mut self, from: usize, to: usize) -> Result<()> {
+        let snapshot = {
+            let Some(track) = self.track.as_mut() else {
+                bail!("no track loaded");
+            };
+            let n = track.checkpoints.len();
+            if from >= n {
+                bail!("from index {from} out of range (track has {n})");
+            }
+            if to >= n {
+                bail!("to index {to} out of range (track has {n})");
+            }
+            let snapshot = track.checkpoints.clone();
+            let cp = track.checkpoints.remove(from);
+            track.checkpoints.insert(to, cp);
+            snapshot
+        };
+        self.re_derive_kinds();
+        // Validate the reordered track before committing the run reset.
+        // `validate_pause_resume_pairing` returns an owned error (no
+        // borrow of `track`), so the immutable borrow ends before the
+        // mutable rollback borrow below.
+        let pairing = self.track.as_ref().map(validate_pause_resume_pairing);
+        if let Some(Err(e)) = pairing {
+            // Roll back to the pre-move order + kinds. The cursor and
+            // latches are untouched -- the reset happens only on success.
+            if let Some(track) = self.track.as_mut() {
+                track.checkpoints = snapshot;
+            }
+            bail!("{e}");
+        }
+        self.reset_after_structural_change();
+        Ok(())
+    }
+
     /// Relabel the checkpoint at index `i`. Non-structural: the kind
     /// sequence, latch lengths, and run cursor are all untouched (no
     /// re-arm). `Err` if no track is loaded or `i` is out of range.
@@ -338,9 +389,13 @@ impl SplitsState {
     }
 
     /// Force the boundary kinds after a structural mutation: index 0 ->
-    /// `Start`, last -> `End`. Every middle checkpoint's kind is left
-    /// untouched, so author-/load-defined `Split`/`Pause`/`Resume`/
-    /// `MapLoaded` checkpoints survive an edit elsewhere in the list.
+    /// `Start`, last -> `End`. Legitimately-middle `Split`/`Pause`/
+    /// `Resume`/`MapLoaded` kinds are left untouched, so author-/load-
+    /// defined checkpoints survive an edit elsewhere in the list. The one
+    /// exception: a `Start`/`End` kind stranded at a middle index is
+    /// demoted to `Split` -- only a reorder (`move_checkpoint`) can shift
+    /// a former boundary inward; for `insert`/`delete` that demotion loop
+    /// is a no-op (they never move a boundary into the middle).
     fn re_derive_kinds(&mut self) {
         let Some(track) = self.track.as_mut() else {
             return;
@@ -351,6 +406,14 @@ impl SplitsState {
         }
         track.checkpoints[0].kind = expected_kind(0, n);
         track.checkpoints[n - 1].kind = expected_kind(n - 1, n);
+        for i in 1..n.saturating_sub(1) {
+            if matches!(
+                track.checkpoints[i].kind,
+                CheckpointKind::Start | CheckpointKind::End
+            ) {
+                track.checkpoints[i].kind = CheckpointKind::Split;
+            }
+        }
     }
 
     /// `load()`-shaped reset for a structural mutation: a changed

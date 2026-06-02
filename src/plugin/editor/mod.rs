@@ -151,6 +151,14 @@ pub fn set_label(i: usize, text: String) {
     splits::editor_set_label(i, text);
 }
 
+/// `edit move <from> <to>`. Reorder a checkpoint within the route: the
+/// one at `from` lands at index `to`, shifting the rest. No arming /
+/// block clicks (purely index-based), so -- like `delete` / `label` --
+/// it doesn't gate on edit mode.
+pub fn reindex(from: usize, to: usize) {
+    splits::editor_reindex(from, to);
+}
+
 /// `edit clear`. Drop the loaded track and reset editor state so the
 /// player can author a fresh one from scratch.
 pub fn clear() {
