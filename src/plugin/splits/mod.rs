@@ -72,7 +72,21 @@ impl SplitsModule {
                 let Some(entity) = (unsafe { Entity::from_id(ENTITY_SELF_ID) }) else {
                     return;
                 };
-                let pos = entity.get_position();
+                // Build the player's feet-anchored model collision box: X/Z
+                // centered on the feet, Y from feet to feet+height, using the
+                // live `Entity.Size` (already multiplied by `ModelScale`) so
+                // detection matches the server's message-block walkthrough
+                // collision even for custom/scaled models. Falls back to the
+                // default human size when the engine hasn't populated `Size`
+                // yet (e.g. before the model loads).
+                let feet = entity.get_position();
+                let raw_size = entity.get_inner().Size;
+                let size = if raw_size.x <= 0.0 || raw_size.y <= 0.0 || raw_size.z <= 0.0 {
+                    geometry::DEFAULT_PLAYER_SIZE
+                } else {
+                    raw_size
+                };
+                let player_box = geometry::player_bounds(feet, size);
                 let world = read_world_name();
                 let mut state = state.borrow_mut();
                 // When disconnected from every timer, AABB / MapLoaded
@@ -127,7 +141,7 @@ impl SplitsModule {
                 observe_map(&mut state, world.as_deref(), &send);
                 step(
                     &mut state,
-                    pos,
+                    player_box,
                     world.as_deref(),
                     &send,
                     on_pause,

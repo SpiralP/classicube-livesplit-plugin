@@ -6,12 +6,28 @@ fn v(x: f32, y: f32, z: f32) -> Vec3 {
     Vec3::new(x, y, z)
 }
 
+/// Fixed model collision size for the position-driven tests: the default
+/// human box (`DEFAULT_PLAYER_SIZE`, ~0.54 x 1.76 x 0.54 blocks). Small
+/// enough that a feet position deep inside one checkpoint AABB never
+/// spills into a neighbor -- the suite's checkpoints are >= 8 blocks
+/// apart.
+const TEST_SIZE: Vec3 = DEFAULT_PLAYER_SIZE;
+
+/// Feet-anchored model collision box at `pos` -- the shape `step()` now
+/// consumes. Lets the position-driven tests keep expressing the player
+/// as a single feet `Vec3` while exercising the real `player_bounds` +
+/// `intersects` collision path.
+fn pbox(pos: Vec3) -> Aabb {
+    player_bounds(pos, TEST_SIZE)
+}
+
 /// Test wrapper around `step()` for the bulk of the suite that doesn't
-/// exercise Pause/Resume kinds. Pass no-op `on_pause` / `on_resume`
-/// callbacks; tests that care about the pause-counter side effects
-/// call `step()` directly with real callbacks.
+/// exercise Pause/Resume kinds. Builds the feet-box via [`pbox`] and
+/// passes no-op `on_pause` / `on_resume` callbacks; tests that care about
+/// the pause-counter side effects call `step()` directly with real
+/// callbacks.
 fn tstep<F: FnMut(Command)>(state: &mut SplitsState, pos: Vec3, world: Option<&str>, send: F) {
-    step(state, pos, world, send, || {}, || {});
+    step(state, pbox(pos), world, send, || {}, || {});
 }
 
 fn aabb(min: (f32, f32, f32), max: (f32, f32, f32)) -> Aabb {
@@ -78,31 +94,51 @@ fn names(cmds: &[Command]) -> Vec<&'static str> {
 }
 
 #[test]
-fn contains_point_inside() {
-    assert!(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)).contains(v(0.5, 0.5, 0.5)));
+fn intersects_overlapping_boxes() {
+    let a = aabb((0.0, 0.0, 0.0), (2.0, 2.0, 2.0));
+    let b = aabb((1.0, 1.0, 1.0), (3.0, 3.0, 3.0));
+    assert!(a.intersects(&b));
+    assert!(b.intersects(&a), "intersects is symmetric");
 }
 
 #[test]
-fn contains_min_corner_is_inside() {
-    // Half-open: the min corner is included.
-    assert!(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)).contains(v(0.0, 0.0, 0.0)));
+fn intersects_disjoint_boxes() {
+    let a = aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    // Separated on X only.
+    assert!(!a.intersects(&aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0))));
+    // Separated on Y only.
+    assert!(!a.intersects(&aabb((0.0, 5.0, 0.0), (1.0, 6.0, 1.0))));
+    // Separated on Z only.
+    assert!(!a.intersects(&aabb((0.0, 0.0, 5.0), (1.0, 1.0, 6.0))));
 }
 
 #[test]
-fn contains_max_corner_is_outside() {
-    // Half-open: the max corner is excluded so adjacent boxes don't overlap.
-    assert!(!aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)).contains(v(1.0, 1.0, 1.0)));
+fn intersects_face_touching_is_true() {
+    // Closed overlap (server's `AABB.Intersects` uses `>=`/`<=`): boxes
+    // sharing exactly the x = 1 face count as intersecting. Sequential
+    // firing (next_index) keeps adjacent checkpoints from both firing.
+    let a = aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    let b = aabb((1.0, 0.0, 0.0), (2.0, 1.0, 1.0));
+    assert!(a.intersects(&b));
+    assert!(b.intersects(&a));
 }
 
 #[test]
-fn contains_just_outside_each_axis() {
-    let b = aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
-    assert!(!b.contains(v(-0.1, 0.5, 0.5)));
-    assert!(!b.contains(v(0.5, -0.1, 0.5)));
-    assert!(!b.contains(v(0.5, 0.5, -0.1)));
-    assert!(!b.contains(v(1.1, 0.5, 0.5)));
-    assert!(!b.contains(v(0.5, 1.1, 0.5)));
-    assert!(!b.contains(v(0.5, 0.5, 1.1)));
+fn player_bounds_centers_xz_on_feet() {
+    let b = player_bounds(v(10.0, 5.0, 20.0), v(0.6, 1.8, 0.6));
+    assert_eq!(b.min.x, 10.0 - 0.3);
+    assert_eq!(b.max.x, 10.0 + 0.3);
+    assert_eq!(b.min.z, 20.0 - 0.3);
+    assert_eq!(b.max.z, 20.0 + 0.3);
+}
+
+#[test]
+fn player_bounds_anchors_y_from_feet_to_feet_plus_height() {
+    // Y is NOT centered: it runs from the feet up to feet + height, like
+    // the engine's `AABB_Make` (the feet are the model's anchor).
+    let b = player_bounds(v(10.0, 5.0, 20.0), v(0.6, 1.8, 0.6));
+    assert_eq!(b.min.y, 5.0);
+    assert_eq!(b.max.y, 5.0 + 1.8);
 }
 
 #[test]
@@ -112,6 +148,63 @@ fn aabb_new_canonicalizes_swapped_corners() {
     assert_eq!(a, b);
     assert_eq!(a.min, v(1.0, 2.0, 3.0));
     assert_eq!(a.max, v(5.0, 6.0, 7.0));
+}
+
+// ---- message-block collision parity (model-box overlap) ----
+
+#[test]
+fn step_fires_head_height_checkpoint_via_model_height() {
+    // A checkpoint floating at head height (Y in [2, 3)) like a message
+    // block the player walks into. The feet stay on the ground, but the
+    // model box reaches up to feet + height, so the checkpoint fires when
+    // (and only when) that height reaches into it.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 2.0, 0.0), (2.0, 3.0, 2.0)),
+            cp(CheckpointKind::End, (10.0, 2.0, 0.0), (12.0, 3.0, 2.0)),
+        ],
+    };
+
+    // Feet at 0.5 -> box top 0.5 + 1.75625 = 2.25625, into [2, 3) -> fires.
+    let mut state = SplitsState::default();
+    state.load(track.clone(), Some(TEST_MAP.to_string()));
+    let mut cmds = Vec::new();
+    tstep(&mut state, v(1.0, 0.5, 1.0), Some(TEST_MAP), |c| {
+        cmds.push(c)
+    });
+    assert_eq!(names(&cmds), vec!["Start"]);
+
+    // Feet at 0.0 -> box top 1.75625, short of Y = 2 -> nothing fires even
+    // though the feet are directly below the checkpoint.
+    let mut state = SplitsState::default();
+    state.load(track, Some(TEST_MAP.to_string()));
+    let mut cmds = Vec::new();
+    tstep(&mut state, v(1.0, 0.0, 1.0), Some(TEST_MAP), |c| {
+        cmds.push(c)
+    });
+    assert!(
+        cmds.is_empty(),
+        "model box top falls short of the checkpoint: {cmds:?}"
+    );
+}
+
+#[test]
+fn wide_model_overlaps_checkpoint_a_narrow_model_misses() {
+    // Pure player_bounds + intersects: a checkpoint sits beside the feet
+    // (x in [3, 4)). A narrow model's box stops short; a wide model (large
+    // size.x) reaches into it -- detection is model-scale dependent, which
+    // is the whole point of reading the live `Entity.Size`.
+    let cp_box = aabb((3.0, 0.0, 0.0), (4.0, 4.0, 1.0));
+    let feet = v(2.0, 1.0, 0.5);
+
+    // Narrow: half-width 0.3 -> box x max 2.3, short of 3.0.
+    let narrow = player_bounds(feet, v(0.6, 1.8, 0.6));
+    assert!(!cp_box.intersects(&narrow));
+
+    // Wide: half-width 1.5 -> box x max 3.5, into [3, 4).
+    let wide = player_bounds(feet, v(3.0, 1.8, 0.6));
+    assert!(cp_box.intersects(&wide));
 }
 
 #[test]

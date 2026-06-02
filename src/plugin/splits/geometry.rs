@@ -73,16 +73,51 @@ impl Aabb {
         }
     }
 
-    /// Half-open containment: `min <= p < max` per axis. Adjacent boxes that
-    /// share a face will not both fire when the player straddles them.
+    /// Closed AABB-vs-AABB overlap, matching the server's `AABB.Intersects`
+    /// (a.Max >= b.Min && a.Min <= b.Max per axis). Used by [`step`] to fire a
+    /// checkpoint when the player's model collision box overlaps it (message-block
+    /// "walkthrough" parity). Closed, so face-touching counts -- sequential firing
+    /// (`next_index`) keeps adjacent boxes from both firing.
     #[must_use]
-    pub fn contains(&self, p: Vec3) -> bool {
-        p.x >= self.min.x
-            && p.x < self.max.x
-            && p.y >= self.min.y
-            && p.y < self.max.y
-            && p.z >= self.min.z
-            && p.z < self.max.z
+    pub fn intersects(&self, other: &Aabb) -> bool {
+        self.min.x <= other.max.x
+            && self.max.x >= other.min.x
+            && self.min.y <= other.max.y
+            && self.max.y >= other.min.y
+            && self.min.z <= other.max.z
+            && self.max.z >= other.min.z
+    }
+}
+
+/// Default human-model collision size, mirroring `HumanModel_GetSize`'s
+/// `Model_RetSize(8.6, 28.1, 8.6)` (`Model.c`): the per-axis size in
+/// sixteenths of a block, at the default `ModelScale` of 1.0. This is the
+/// *collision* size the engine writes to `Entity.Size` (via
+/// `Entity_UpdateModelBounds`), not the taller picking AABB
+/// (`HumanModel_GetBounds`, 32/16 high). Used as the feet-box extent
+/// fallback when `Entity.Size` is still zero (model not yet loaded), so
+/// detection has a sane box before the engine populates the real scaled
+/// size. Written as `n / 16.0` rather than pre-divided decimals so it stays
+/// bit-faithful to the source (dividing by a power of two is exact) and the
+/// provenance is unmistakable.
+pub(crate) const DEFAULT_PLAYER_SIZE: Vec3 = Vec3 {
+    x: 8.6 / 16.0,
+    y: 28.1 / 16.0,
+    z: 8.6 / 16.0,
+};
+
+/// Feet-anchored world-space collision box from the feet position and the
+/// model's already-scaled collision size (`Entity.Size`): X/Z centered on the
+/// feet, Y from feet to feet+height. Matches the server's
+/// `ModelBB.OffsetPosition` for walkthrough collision (engine `AABB_Make`).
+pub(crate) fn player_bounds(feet: Vec3, size: Vec3) -> Aabb {
+    Aabb {
+        min: Vec3::new(feet.x - size.x * 0.5, feet.y, feet.z - size.z * 0.5),
+        max: Vec3::new(
+            feet.x + size.x * 0.5,
+            feet.y + size.y,
+            feet.z + size.z * 0.5,
+        ),
     }
 }
 
@@ -240,13 +275,18 @@ pub fn validate_pause_resume_pairing(track: &Track) -> Result<()> {
     Ok(())
 }
 
-/// Pure decision function: given the current state, the player position
-/// for this frame, and the engine's current `World.Name`, advance the
-/// state and emit LiveSplit commands via `send`. Pause/Resume kinds
-/// additionally invoke `on_pause` / `on_resume` (wired to the
-/// `pause_triggers` counter at call sites).
+/// Pure decision function: given the current state, the player's
+/// feet-anchored model collision box for this frame, and the engine's
+/// current `World.Name`, advance the state and emit LiveSplit commands
+/// via `send`. Pause/Resume kinds additionally invoke `on_pause` /
+/// `on_resume` (wired to the `pause_triggers` counter at call sites).
 ///
 /// Rules:
+/// - Message-block collision parity: a checkpoint fires when the player's
+///   model collision box (`player_box`, built by [`player_bounds`] from the
+///   live feet position + `Entity.Size`) overlaps the checkpoint AABB
+///   ([`Aabb::intersects`], closed), exactly like the server's
+///   `PlayerPhysics.Walkthrough`.
 /// - Edge-triggered: a checkpoint only fires on the outside-to-inside
 ///   transition, not while the player stands still inside it.
 /// - Sequential: only `track.checkpoints[next_index]` is eligible to fire as
@@ -260,7 +300,7 @@ pub fn validate_pause_resume_pairing(track: &Track) -> Result<()> {
 ///   skipped.
 pub fn step<F: FnMut(Command), P: FnMut(), R: FnMut()>(
     state: &mut SplitsState,
-    pos: Vec3,
+    player_box: Aabb,
     world: Option<&str>,
     mut send: F,
     mut on_pause: P,
@@ -276,7 +316,7 @@ pub fn step<F: FnMut(Command), P: FnMut(), R: FnMut()>(
         .iter()
         .map(|cp| match &cp.trigger {
             Trigger::Aabb(aabb) => match (current_map, world) {
-                (Some(t), Some(w)) if t == w => aabb.contains(pos),
+                (Some(t), Some(w)) if t == w => aabb.intersects(&player_box),
                 _ => false,
             },
             Trigger::MapLoaded(name) => {
