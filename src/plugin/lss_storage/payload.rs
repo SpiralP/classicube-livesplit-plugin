@@ -13,6 +13,16 @@ use crate::plugin::{
 /// (build + dedup compare).
 pub const CUSTOM_VAR_NAME: &str = "ClassiCubeTrack";
 
+/// Names of the `<CustomVariable>`s recording the server + starting map a
+/// track is scoped to. Unlike [`CUSTOM_VAR_NAME`] (read by the reader and
+/// the dedup gate), these are **write-only** informational metadata: the
+/// plugin derives the live `(server, map)` at load/save time and never
+/// reads these back. They give a moved/shared/imported `.lss` a recoverable
+/// binding context and let the LiveSplit UI surface the scope; the file
+/// path stays the matching index.
+pub const SERVER_VAR_NAME: &str = "ClassiCubeServer";
+pub const MAP_VAR_NAME: &str = "ClassiCubeMap";
+
 /// Default label for the Start checkpoint, which has no `<Segment>` of
 /// its own (see [`apply_labels`]). Matches the conventional Start label
 /// used elsewhere (fixture, status display).

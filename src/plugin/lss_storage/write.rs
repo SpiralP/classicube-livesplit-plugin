@@ -16,7 +16,7 @@ use crate::{
     plugin::{
         lss_storage::{
             path,
-            payload::{self, CUSTOM_VAR_NAME},
+            payload::{self, CUSTOM_VAR_NAME, MAP_VAR_NAME, SERVER_VAR_NAME},
         },
         splits::geometry::Track,
         track_source::decode,
@@ -37,7 +37,7 @@ pub async fn save_track(track: Track, server_display: String, map: String, annou
     let dir = path::track_dir(&server_display, &map);
     let category = path::sanitize_component(&track.name);
 
-    match save_track_to(&track, &dir, &category) {
+    match save_track_to(&track, &server_display, &map, &dir, &category) {
         Ok(SaveOutcome::Wrote(path)) => {
             info!(?path, "wrote new track version");
             let filename = path.file_name().map_or_else(
@@ -63,7 +63,13 @@ pub(super) enum SaveOutcome {
     AlreadyLatest,
 }
 
-pub(super) fn save_track_to(track: &Track, dir: &Path, category: &str) -> Result<SaveOutcome> {
+pub(super) fn save_track_to(
+    track: &Track,
+    server: &str,
+    map: &str,
+    dir: &Path,
+    category: &str,
+) -> Result<SaveOutcome> {
     let canonical = payload::serialize_canonical(track).context("serializing payload")?;
 
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -79,7 +85,7 @@ pub(super) fn save_track_to(track: &Track, dir: &Path, category: &str) -> Result
     let final_path = dir.join(format!("{category}-v{next_version}.lss"));
     let tmp_path = dir.join(format!("{category}-v{next_version}.lss.tmp"));
 
-    let xml = build_lss_xml(track, &canonical)?;
+    let xml = build_lss_xml(track, server, map, &canonical)?;
 
     fs::write(&tmp_path, xml.as_bytes())
         .with_context(|| format!("writing {}", tmp_path.display()))?;
@@ -132,19 +138,48 @@ fn same_as_latest(path: &Path, canonical: &str) -> Result<bool> {
     }
 }
 
-fn build_lss_xml(track: &Track, canonical: &str) -> Result<String> {
+fn build_lss_xml(track: &Track, server: &str, map: &str, canonical: &str) -> Result<String> {
     let mut run = Run::new();
     run.set_game_name("ClassiCube");
 
-    // The category name is the bare (color-stripped) track name. The
-    // server lives only in the file path (`.../<server>/<map>/…`), not in
-    // the `.lss` metadata. On read, `<CategoryName>` is the title source
-    // (the payload no longer carries an `LS title` line). It's
-    // color-stripped here, so the in-memory title comes back without
-    // color codes -- the filename category stem stays stable across a
-    // load -> edit -> re-save cycle because `sanitize_component` also
-    // strips color first and is idempotent on already-stripped text.
+    // Where each piece of track metadata lives in the `.lss`:
+    //   - title         -> `<CategoryName>` (bare, color-stripped)
+    //   - server + map  -> informational `ClassiCubeServer`/`ClassiCubeMap`
+    //                      custom vars (color-stripped, write-only, never
+    //                      read back; the file path stays the matching index)
+    //   - geometry      -> `ClassiCubeTrack` custom var (read + dedup)
+    //   - labels        -> `<Segment>` elements
+    //
+    // The category name is the bare (color-stripped) track name. On read,
+    // `<CategoryName>` is the title source (the payload no longer carries
+    // an `LS title` line). It's color-stripped here, so the in-memory title
+    // comes back without color codes -- the filename category stem stays
+    // stable across a load -> edit -> re-save cycle because
+    // `sanitize_component` also strips color first and is idempotent on
+    // already-stripped text.
     run.set_category_name(remove_color(&track.name));
+
+    // Server + starting map as self-describing metadata. These give a
+    // moved/shared/imported `.lss` a recoverable binding context and let
+    // the LiveSplit UI surface the scope. Color-stripped for a clean UI
+    // value (matching `<CategoryName>`); livesplit-core XML-escapes the
+    // value, so any residual characters round-trip safely. Write-only:
+    // never read back, and not part of the dedup key (server/map are
+    // invariant per directory, so they can't cause write churn).
+    //
+    // Known limitation: if a server's *display* name changes but still
+    // sanitizes to the same directory slug (e.g. a color-code tweak) and
+    // the geometry is unchanged, the dedup gate skips the write and the
+    // latest file keeps the first-seen server string. A cosmetic edge case;
+    // not worth adding server/map to the dedup key for.
+    run.metadata_mut()
+        .custom_variable_mut(SERVER_VAR_NAME)
+        .permanent()
+        .set_value(remove_color(server));
+    run.metadata_mut()
+        .custom_variable_mut(MAP_VAR_NAME)
+        .permanent()
+        .set_value(remove_color(map));
 
     // LiveSplit's segment list is everything after the implicit Start:
     // pressing Start is the timer-side run-start action, not a named

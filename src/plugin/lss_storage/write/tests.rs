@@ -46,7 +46,7 @@ fn build_lss_xml_stores_canonical_text() {
     let t = sample_track();
     let canonical = payload::serialize_canonical(&t).unwrap();
 
-    let xml = build_lss_xml(&t, &canonical).unwrap();
+    let xml = build_lss_xml(&t, "Srv", "Map", &canonical).unwrap();
     let run = parse(&xml).expect("re-parse");
 
     let stored = run
@@ -65,6 +65,17 @@ fn build_lss_xml_stores_canonical_text() {
     assert_eq!(run.game_name(), "ClassiCube");
     // The category name is the bare track name -- no server prefix.
     assert_eq!(run.category_name(), "any%");
+
+    // Server + starting map are recorded as informational custom vars
+    // (write-only; the plugin never reads them back).
+    assert_eq!(
+        run.metadata().custom_variable_value("ClassiCubeServer"),
+        Some("Srv")
+    );
+    assert_eq!(
+        run.metadata().custom_variable_value("ClassiCubeMap"),
+        Some("Map")
+    );
 }
 
 #[test]
@@ -72,7 +83,7 @@ fn build_lss_xml_round_trips_through_parse() {
     let t = sample_track(); // [Start "start", End "end"]
     let canonical = payload::serialize_canonical(&t).unwrap();
 
-    let xml = build_lss_xml(&t, &canonical).unwrap();
+    let xml = build_lss_xml(&t, "Srv", "Map", &canonical).unwrap();
     let run = parse(&xml).expect("re-parse");
 
     let stored = run
@@ -98,7 +109,7 @@ fn build_lss_xml_strips_color_codes_from_display() {
     t.name = "&aany%".to_owned();
     let canonical = payload::serialize_canonical(&t).unwrap();
 
-    let xml = build_lss_xml(&t, &canonical).unwrap();
+    let xml = build_lss_xml(&t, "Srv", "Map", &canonical).unwrap();
     let run = parse(&xml).unwrap();
     let cat = run.category_name();
     assert!(
@@ -107,6 +118,33 @@ fn build_lss_xml_strips_color_codes_from_display() {
     );
     // The category name is the bare, color-stripped track name.
     assert_eq!(cat, "any%");
+}
+
+#[test]
+fn build_lss_xml_strips_color_codes_from_server_and_map() {
+    let t = sample_track();
+    let canonical = payload::serialize_canonical(&t).unwrap();
+
+    // Server + map carry color codes on the wire; they're stripped for a
+    // clean UI value, the same treatment `<CategoryName>` gets.
+    let xml = build_lss_xml(&t, "&cMy&eServer", "&amymap", &canonical).unwrap();
+    let run = parse(&xml).unwrap();
+
+    let server = run
+        .metadata()
+        .custom_variable_value("ClassiCubeServer")
+        .expect("ClassiCubeServer present");
+    let map = run
+        .metadata()
+        .custom_variable_value("ClassiCubeMap")
+        .expect("ClassiCubeMap present");
+    assert!(
+        !server.contains('&'),
+        "server still has color code: {server}"
+    );
+    assert!(!map.contains('&'), "map still has color code: {map}");
+    assert_eq!(server, "MyServer");
+    assert_eq!(map, "mymap");
 }
 
 #[test]
@@ -123,7 +161,7 @@ fn track_name_color_code_stripped_through_category_name() {
     assert!(canonical.starts_with("LS v1\n"));
     assert!(!canonical.contains("LS title"));
 
-    let xml = build_lss_xml(&t, &canonical).unwrap();
+    let xml = build_lss_xml(&t, "Srv", "Map", &canonical).unwrap();
     let run = parse(&xml).expect("re-parse");
     let stored = run
         .metadata()
@@ -143,7 +181,7 @@ fn save_track_to_writes_then_dedups() {
     let category = "anypct";
 
     let t = sample_track();
-    match save_track_to(&t, &dir, category).unwrap() {
+    match save_track_to(&t, "Srv", "Map", &dir, category).unwrap() {
         SaveOutcome::Wrote(p) => {
             assert_eq!(
                 p.file_name().unwrap(),
@@ -154,7 +192,7 @@ fn save_track_to_writes_then_dedups() {
     }
 
     assert!(matches!(
-        save_track_to(&t, &dir, category).unwrap(),
+        save_track_to(&t, "Srv", "Map", &dir, category).unwrap(),
         SaveOutcome::AlreadyLatest
     ));
 
@@ -163,7 +201,7 @@ fn save_track_to_writes_then_dedups() {
         bb.min.x += 1.0;
         bb.max.x += 1.0;
     }
-    match save_track_to(&t2, &dir, category).unwrap() {
+    match save_track_to(&t2, "Srv", "Map", &dir, category).unwrap() {
         SaveOutcome::Wrote(p) => {
             assert_eq!(
                 p.file_name().unwrap(),
@@ -179,7 +217,7 @@ fn save_track_to_writes_then_dedups() {
     let mut t3 = t2.clone();
     t3.checkpoints[0].label = "renamed".to_owned();
     assert!(matches!(
-        save_track_to(&t3, &dir, category).unwrap(),
+        save_track_to(&t3, "Srv", "Map", &dir, category).unwrap(),
         SaveOutcome::AlreadyLatest
     ));
 
@@ -232,7 +270,7 @@ fn build_lss_xml_preserves_multiline_payload_through_real_save_load() {
     assert!(canonical.matches('\n').count() >= 5);
     assert!(canonical.lines().any(|l| l.chars().count() > 50));
 
-    let xml = build_lss_xml(&t, &canonical).unwrap();
+    let xml = build_lss_xml(&t, "Srv", "Map", &canonical).unwrap();
     let run = parse(&xml).expect("re-parse");
     let stored = run
         .metadata()
