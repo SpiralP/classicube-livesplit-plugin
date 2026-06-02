@@ -7,9 +7,12 @@ use classicube_helpers::{async_manager, tick::TickEventHandler};
 use classicube_sys::Server;
 use tracing::debug;
 
-use crate::plugin::{
-    module::Module,
-    splits::{self, geometry::Track},
+use crate::{
+    chat_print,
+    plugin::{
+        module::Module,
+        splits::{self, geometry::Track},
+    },
 };
 
 pub struct LssStorageModule {
@@ -72,7 +75,30 @@ fn on_track_loaded(track: &Track, starting_map: Option<&str>) {
     };
     let track = track.clone();
     let map = map.to_owned();
-    async_manager::spawn(write::save_track(track, server, map));
+    // Background autosave: silent on the no-op (dedup) case.
+    async_manager::spawn(write::save_track(track, server, map, false));
+}
+
+/// Write the currently loaded track to disk on demand
+/// (`/client LiveSplit save`), reusing the autosave writer. Files the
+/// track under `(server, starting_map)` -- the map the track is scoped
+/// to, not the live world. Announces the no-op case so a manual save
+/// with no changes is clean feedback rather than silence. Not gated on
+/// `require_connected()` -- file I/O is local.
+pub fn save_current_track() {
+    let Some(track) = splits::current_track() else {
+        chat_print("&cLiveSplit: no track loaded to save");
+        return;
+    };
+    let Some(server) = current_server_display() else {
+        chat_print("&cLiveSplit: cannot resolve server name to save under");
+        return;
+    };
+    let Some(map) = splits::starting_map() else {
+        chat_print("&cLiveSplit: no starting map for this track (load it on a map first)");
+        return;
+    };
+    async_manager::spawn(write::save_track(track, server, map, true));
 }
 
 /// Resolve the unsanitized display server name. Returns

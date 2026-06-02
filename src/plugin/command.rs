@@ -7,8 +7,9 @@ use tracing::debug;
 use crate::{
     chat_print,
     plugin::{
-        hud, is_plugin_active,
+        editor, hud, is_plugin_active,
         livesplit::{self, Command as LsCommand, protocol::TimingMethod},
+        lss_storage,
         module::Module,
         pause_triggers, splits,
         track_source::encode::encode_for_chat,
@@ -43,14 +44,29 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit start | split | splitorstart");
     chat_print("&e  /client LiveSplit pause | resume | reset");
     chat_print("&e  /client LiveSplit undosplit | skipsplit");
-    chat_print("&e  /client LiveSplit loadtest | splits | clear");
+    chat_print("&e  /client LiveSplit loadtest | splits | clear | save");
     chat_print("&e  /client LiveSplit show [on|off]    (toggle checkpoint HUD)");
+    chat_print("&e  /client LiveSplit edit on|off");
+    chat_print("&e  /client LiveSplit edit place [i] | cancel | select <i>");
+    chat_print("&e  /client LiveSplit edit delete [i] | label <i> <text> | clear");
     chat_print("&e  /client LiveSplit track encode");
     chat_print("&e  /client LiveSplit mb <subcmd ...>  (one chained /mb to deliver all lines)");
     chat_print(
         "&e  /client LiveSplit nas               (copies all lines, \\n-separated, to clipboard)",
     );
     chat_print("&e  /client LiveSplit tabdump           (dump tab-list entries for debugging)");
+}
+
+/// Parse a checkpoint index argument, chat-printing an error and
+/// returning `None` on a non-numeric value.
+fn parse_index(s: &str) -> Option<usize> {
+    match s.parse::<usize>() {
+        Ok(i) => Some(i),
+        Err(_) => {
+            chat_print(&format!("&cLiveSplit: invalid checkpoint index '{s}'"));
+            None
+        }
+    }
 }
 
 fn require_connected() -> bool {
@@ -187,6 +203,7 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         ["loadtest"] => splits::load_fixture(),
         ["splits"] => splits::print_status(),
         ["clear"] => splits::clear_track(),
+        ["save"] => lss_storage::save_current_track(),
         ["show"] => {
             let on = hud::toggle_show();
             chat_print(if on {
@@ -203,6 +220,36 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
             hud::set_show(false);
             chat_print("&aLiveSplit: checkpoint HUD off");
         }
+        // Editor arms -- local plugin/file state, so none gate on
+        // `require_connected()` (the editor is usable offline; a
+        // mutation mid-run notifies any attached timer via
+        // `splits::editor_*`).
+        ["edit", "on"] => editor::set_enabled(true),
+        ["edit", "off"] => editor::set_enabled(false),
+        ["edit", "place"] => editor::arm_place(None),
+        ["edit", "place", i] => {
+            if let Some(idx) = parse_index(i) {
+                editor::arm_place(Some(idx));
+            }
+        }
+        ["edit", "cancel"] => editor::cancel(),
+        ["edit", "select", i] => {
+            if let Some(idx) = parse_index(i) {
+                editor::select(idx);
+            }
+        }
+        ["edit", "delete"] => editor::delete(None),
+        ["edit", "delete", i] => {
+            if let Some(idx) = parse_index(i) {
+                editor::delete(Some(idx));
+            }
+        }
+        ["edit", "label", i, rest @ ..] if !rest.is_empty() => {
+            if let Some(idx) = parse_index(i) {
+                editor::set_label(idx, rest.join(" "));
+            }
+        }
+        ["edit", "clear"] => editor::clear(),
         ["track", "encode"] => {
             if let Some(lines) = encode_track_or_print_error() {
                 let (name, n) = splits::current_track()
@@ -299,8 +346,10 @@ impl CommandModule {
                     "&a/client LiveSplit start | split | splitorstart",
                     "&a/client LiveSplit pause | resume | reset",
                     "&a/client LiveSplit undosplit | skipsplit",
-                    "&a/client LiveSplit loadtest | splits | clear",
+                    "&a/client LiveSplit loadtest | splits | clear | save",
                     "&a/client LiveSplit show [on|off]",
+                    "&a/client LiveSplit edit on|off | place [i] | cancel | select <i>",
+                    "&a/client LiveSplit edit delete [i] | label <i> <text> | clear",
                     "&a/client LiveSplit track encode",
                     "&a/client LiveSplit mb <subcmd ...>",
                     "&a/client LiveSplit nas",

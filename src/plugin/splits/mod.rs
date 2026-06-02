@@ -333,8 +333,93 @@ pub fn current_map() -> Option<String> {
     read_world_name()
 }
 
+/// The map the loaded track is scoped to -- the world name captured at
+/// `load()` time. Distinct from [`current_map`] (the live world, which
+/// may differ after a map change). `None` if no track is loaded or the
+/// plugin is mid-teardown. Used by `/client LiveSplit save` to file the
+/// track under its scope map.
+pub fn starting_map() -> Option<String> {
+    with_state(|s| s.starting_map.clone()).flatten()
+}
+
 pub fn reset_run() {
     with_state(SplitsState::rearm);
+}
+
+/// Tell a connected timer to reset after a structural edit aborted an
+/// in-progress run. The mutation already re-armed local state; this
+/// just keeps the timer in sync. Silent + no-op when nothing was
+/// running or no timer is attached (the editor is usable offline).
+fn editor_reset_timer_if_was_running(was_in_progress: bool) {
+    if was_in_progress && livesplit::any_connected() {
+        livesplit::send(Command::Reset { save_attempt: None });
+        chat_print("&eLiveSplit: run reset to allow edit");
+    }
+}
+
+/// Insert an editor-placed AABB checkpoint, returning the index it
+/// landed at. Samples `run_in_progress()` **before** the mutation (which
+/// re-arms the cursor to 0) so an aborted run can notify the timer.
+/// Chat-prints the outcome. `None` if the plugin is mid-teardown or the
+/// mutation failed.
+pub fn editor_insert(aabb: Aabb, label: String, target: Option<usize>) -> Option<usize> {
+    let was_in_progress = run_in_progress();
+    match with_state(|s| s.insert_checkpoint(aabb, label, target)) {
+        None => {
+            chat_print("&eLiveSplit: plugin not active");
+            None
+        }
+        Some(Err(e)) => {
+            chat_print(&format!("&cLiveSplit: cannot add checkpoint: {e}"));
+            None
+        }
+        Some(Ok(idx)) => {
+            editor_reset_timer_if_was_running(was_in_progress);
+            chat_print(&format!("&aLiveSplit: added checkpoint #{idx}"));
+            Some(idx)
+        }
+    }
+}
+
+/// Delete the checkpoint at `i`. Like [`editor_insert`], samples
+/// run-progress before mutating and notifies a connected timer if it
+/// aborted a run. Returns `true` on success.
+pub fn editor_delete(i: usize) -> bool {
+    let was_in_progress = run_in_progress();
+    match with_state(|s| s.delete_checkpoint(i)) {
+        None => {
+            chat_print("&eLiveSplit: plugin not active");
+            false
+        }
+        Some(Err(e)) => {
+            chat_print(&format!("&cLiveSplit: cannot delete checkpoint: {e}"));
+            false
+        }
+        Some(Ok(())) => {
+            editor_reset_timer_if_was_running(was_in_progress);
+            chat_print(&format!("&aLiveSplit: deleted checkpoint #{i}"));
+            true
+        }
+    }
+}
+
+/// Relabel the checkpoint at `i`. Non-structural, so it never re-arms
+/// the run or touches the timer. Returns `true` on success.
+pub fn editor_set_label(i: usize, text: String) -> bool {
+    match with_state(|s| s.set_label(i, text)) {
+        None => {
+            chat_print("&eLiveSplit: plugin not active");
+            false
+        }
+        Some(Err(e)) => {
+            chat_print(&format!("&cLiveSplit: cannot set label: {e}"));
+            false
+        }
+        Some(Ok(())) => {
+            chat_print(&format!("&aLiveSplit: set label of checkpoint #{i}"));
+            true
+        }
+    }
 }
 
 pub fn clear_track() {

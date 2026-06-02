@@ -2,7 +2,7 @@
 mod tests;
 
 use anyhow::{Result, bail};
-use classicube_sys::Vec3;
+use classicube_sys::{IVec3, Vec3};
 
 use crate::plugin::livesplit::{Command, protocol::TimingMethod};
 
@@ -86,6 +86,25 @@ impl Aabb {
             && self.max.y >= other.min.y
             && self.min.z <= other.max.z
             && self.max.z >= other.min.z
+    }
+}
+
+/// Build an [`Aabb`] from two clicked block corners. Each axis spans
+/// `min(a, b) .. max(a, b) + 1`: the `+1` turns each clicked block coord
+/// into its half-open `[block, block + 1)` world interval, so a single
+/// block (both corners equal) yields a 1x1x1 box. Worked example:
+/// `(10,4,20)` + `(12,7,22)` -> min `(10,4,20)`, max `(13,8,23)`.
+/// Corner order doesn't matter (per-axis min/max canonicalizes).
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "block coords are small non-negative ints, exact in f32"
+)]
+pub(crate) fn aabb_from_block_corners(a: IVec3, b: IVec3) -> Aabb {
+    let lo = |p: i32, q: i32| p.min(q) as f32;
+    let hi = |p: i32, q: i32| (p.max(q) + 1) as f32;
+    Aabb {
+        min: Vec3::new(lo(a.x, b.x), lo(a.y, b.y), lo(a.z, b.z)),
+        max: Vec3::new(hi(a.x, b.x), hi(a.y, b.y), hi(a.z, b.z)),
     }
 }
 
@@ -230,6 +249,138 @@ impl SplitsState {
         // `/client LiveSplit clear` while a Pause AABB has fired
         // leaves the counter stuck non-zero.
         crate::plugin::pause_triggers::pause_clear_all();
+    }
+
+    /// Insert a new `Split`/AABB checkpoint and return the index it
+    /// landed at. `target` is `None` to append (just before `End`) or
+    /// `Some(i)` to insert at a specific slot. On a populated track
+    /// (>= 2 checkpoints) the insert position is clamped to
+    /// `[1, n - 1]` so the boundary slots never move: Start stays at
+    /// index 0, End stays last. Bootstrapping an empty/one-checkpoint
+    /// track ignores `target` -- the first placement becomes index 0
+    /// (later re-derived to `Start`), the second appends as index 1
+    /// (re-derived to `End`). After the structural change the boundary
+    /// kinds are re-derived and the per-checkpoint latches reallocated
+    /// (the run re-arms to index 0). `Err` if no track is loaded.
+    pub fn insert_checkpoint(
+        &mut self,
+        aabb: Aabb,
+        label: String,
+        target: Option<usize>,
+    ) -> Result<usize> {
+        let idx = {
+            let Some(track) = self.track.as_mut() else {
+                bail!("no track loaded");
+            };
+            let n = track.checkpoints.len();
+            let idx = if n < 2 {
+                // Bootstrap: first placement -> 0, second -> 1.
+                n
+            } else {
+                // Strictly between Start and End so boundaries don't move.
+                match target {
+                    None => n - 1,
+                    Some(i) => i.clamp(1, n - 1),
+                }
+            };
+            track.checkpoints.insert(
+                idx,
+                Checkpoint {
+                    kind: CheckpointKind::Split,
+                    trigger: Trigger::Aabb(aabb),
+                    label,
+                },
+            );
+            idx
+        };
+        self.re_derive_kinds();
+        self.reset_after_structural_change();
+        Ok(idx)
+    }
+
+    /// Delete the checkpoint at index `i`. Refuses if the track would
+    /// drop below 2 checkpoints (Start + End minimum, mirroring the
+    /// `n >= 2` floor the payload serializer enforces). Re-derives the
+    /// boundary kinds and reallocates the latches afterward. `Err` if
+    /// no track is loaded or `i` is out of range.
+    pub fn delete_checkpoint(&mut self, i: usize) -> Result<()> {
+        {
+            let Some(track) = self.track.as_mut() else {
+                bail!("no track loaded");
+            };
+            let n = track.checkpoints.len();
+            if i >= n {
+                bail!("checkpoint index {i} out of range (track has {n})");
+            }
+            if n <= 2 {
+                bail!("cannot delete: a track needs at least 2 checkpoints (Start + End)");
+            }
+            track.checkpoints.remove(i);
+        }
+        self.re_derive_kinds();
+        self.reset_after_structural_change();
+        Ok(())
+    }
+
+    /// Relabel the checkpoint at index `i`. Non-structural: the kind
+    /// sequence, latch lengths, and run cursor are all untouched (no
+    /// re-arm). `Err` if no track is loaded or `i` is out of range.
+    pub fn set_label(&mut self, i: usize, text: String) -> Result<()> {
+        let Some(track) = self.track.as_mut() else {
+            bail!("no track loaded");
+        };
+        let n = track.checkpoints.len();
+        let Some(cp) = track.checkpoints.get_mut(i) else {
+            bail!("checkpoint index {i} out of range (track has {n})");
+        };
+        cp.label = text;
+        Ok(())
+    }
+
+    /// Force the boundary kinds after a structural mutation: index 0 ->
+    /// `Start`, last -> `End`. Every middle checkpoint's kind is left
+    /// untouched, so author-/load-defined `Split`/`Pause`/`Resume`/
+    /// `MapLoaded` checkpoints survive an edit elsewhere in the list.
+    fn re_derive_kinds(&mut self) {
+        let Some(track) = self.track.as_mut() else {
+            return;
+        };
+        let n = track.checkpoints.len();
+        if n == 0 {
+            return;
+        }
+        track.checkpoints[0].kind = expected_kind(0, n);
+        track.checkpoints[n - 1].kind = expected_kind(n - 1, n);
+    }
+
+    /// `load()`-shaped reset for a structural mutation: a changed
+    /// `checkpoints.len()` means `fired[]`/`last_inside[]` must be
+    /// **reallocated** to the new length, not `fill`'d (which `rearm()`
+    /// does, assuming the lengths already match). Re-arms the cursor to
+    /// 0 and drains the pause counter so an edit mid-pause can't strand
+    /// a stuck pause.
+    fn reset_after_structural_change(&mut self) {
+        let n = self.track.as_ref().map_or(0, |t| t.checkpoints.len());
+        self.next_index = 0;
+        self.fired = vec![false; n];
+        self.last_inside = vec![false; n];
+        crate::plugin::pause_triggers::pause_clear_all();
+    }
+}
+
+/// Positional kind for the boundary slots only. Called solely for index
+/// 0 (-> `Start`) and the last index (-> `End`) by
+/// `SplitsState::re_derive_kinds`; middle kinds are author-/load-defined
+/// and preserved across edits. NOT the same as the payload module's
+/// `kind_valid_at` (a permissive validator that accepts Split/Pause/
+/// Resume in the middle).
+pub(crate) fn expected_kind(i: usize, n: usize) -> CheckpointKind {
+    if i == 0 {
+        CheckpointKind::Start
+    } else if i + 1 == n {
+        CheckpointKind::End
+    } else {
+        CheckpointKind::Split
     }
 }
 

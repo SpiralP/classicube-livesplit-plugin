@@ -1,5 +1,6 @@
 pub mod async_manager;
 pub mod command;
+pub mod editor;
 pub mod hud;
 pub mod livesplit;
 pub mod logger;
@@ -12,10 +13,10 @@ pub mod track_source;
 use std::cell::RefCell;
 
 use crate::plugin::{
-    async_manager::AsyncManagerModule, command::CommandModule, hud::HudModule,
-    livesplit::LiveSplitModule, logger::LoggerModule, lss_storage::LssStorageModule,
-    module::Module, pause_triggers::PauseTriggersModule, splits::SplitsModule,
-    track_source::TrackSourceModule,
+    async_manager::AsyncManagerModule, command::CommandModule, editor::EditorModule,
+    hud::HudModule, livesplit::LiveSplitModule, logger::LoggerModule,
+    lss_storage::LssStorageModule, module::Module, pause_triggers::PauseTriggersModule,
+    splits::SplitsModule, track_source::TrackSourceModule,
 };
 
 thread_local!(
@@ -31,6 +32,7 @@ struct MainModule {
     track_source: TrackSourceModule,
     lss_storage: LssStorageModule,
     hud: HudModule,
+    editor: EditorModule,
     command: CommandModule,
 }
 
@@ -44,6 +46,7 @@ impl MainModule {
         let track_source = TrackSourceModule::init();
         let lss_storage = LssStorageModule::init();
         let hud = HudModule::init();
+        let editor = EditorModule::init();
         let command = CommandModule::init();
 
         Self {
@@ -55,6 +58,7 @@ impl MainModule {
             track_source,
             lss_storage,
             hud,
+            editor,
             command,
         }
     }
@@ -86,6 +90,14 @@ impl Module for MainModule {
         // accessors). Reverse-dispatch then tears `hud` down before
         // `splits`, clearing the in-world selection boxes while the
         // track snapshot it mirrors is still available.
+        //
+        // `editor` sits **after** `splits`/`hud` (its commit path mutates
+        // splits state and the boxes become visible through hud) and
+        // **before** `command` (the `edit …` arms dispatch into editor
+        // fns). Reverse-dispatch tears `command` down first, then
+        // `editor` (uninstalling the `Server.SendBlock` hook), then
+        // `hud`/`splits`. Its `on_new_map_loaded` re-asserts the hook,
+        // ordered after splits/hud have settled the map change.
         vec![
             &mut self.logger,
             &mut self.async_manager,
@@ -95,6 +107,7 @@ impl Module for MainModule {
             &mut self.track_source,
             &mut self.lss_storage,
             &mut self.hud,
+            &mut self.editor,
             &mut self.command,
         ]
     }

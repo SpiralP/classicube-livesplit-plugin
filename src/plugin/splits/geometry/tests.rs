@@ -1112,3 +1112,218 @@ fn unload_clears_pause_counter() {
 
     assert_eq!(pause_triggers::current_counter(), 0);
 }
+
+// ---- editor mutation API ----
+
+fn iv(x: i32, y: i32, z: i32) -> IVec3 {
+    IVec3 { x, y, z }
+}
+
+#[test]
+fn aabb_from_block_corners_single_block_is_unit_cube() {
+    // Clicking the same block twice yields a 1x1x1 box: each axis spans
+    // [block, block + 1).
+    let b = aabb_from_block_corners(iv(10, 4, 20), iv(10, 4, 20));
+    assert_eq!(b.min, v(10.0, 4.0, 20.0));
+    assert_eq!(b.max, v(11.0, 5.0, 21.0));
+}
+
+#[test]
+fn aabb_from_block_corners_worked_example() {
+    // The plan's worked example: (10,4,20) + (12,7,22) -> min (10,4,20),
+    // max (13,8,23). The +1 lands on the per-axis max.
+    let b = aabb_from_block_corners(iv(10, 4, 20), iv(12, 7, 22));
+    assert_eq!(b.min, v(10.0, 4.0, 20.0));
+    assert_eq!(b.max, v(13.0, 8.0, 23.0));
+}
+
+#[test]
+fn aabb_from_block_corners_order_independent() {
+    // Per-axis min/max canonicalizes, so corner order doesn't matter.
+    let forward = aabb_from_block_corners(iv(10, 4, 20), iv(12, 7, 22));
+    let swapped = aabb_from_block_corners(iv(12, 7, 22), iv(10, 4, 20));
+    assert_eq!(forward, swapped);
+    // Mixed per-axis ordering canonicalizes too.
+    let mixed = aabb_from_block_corners(iv(12, 4, 22), iv(10, 7, 20));
+    assert_eq!(mixed, forward);
+}
+
+fn kinds(state: &SplitsState) -> Vec<CheckpointKind> {
+    state
+        .track
+        .as_ref()
+        .unwrap()
+        .checkpoints
+        .iter()
+        .map(|c| c.kind)
+        .collect()
+}
+
+#[test]
+fn insert_checkpoint_appends_before_end_and_rederives_boundaries() {
+    use CheckpointKind::{End, Split, Start};
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string())); // Start, Split, Split, End
+    let idx = state
+        .insert_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "new".into(), None)
+        .unwrap();
+    assert_eq!(idx, 3, "append lands just before End at index n - 1");
+    let t = state.track.as_ref().unwrap();
+    assert_eq!(t.checkpoints.len(), 5);
+    assert_eq!(kinds(&state), vec![Start, Split, Split, Split, End]);
+    assert_eq!(t.checkpoints[3].label, "new");
+    // Latches reallocated to the new length, run re-armed.
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false; 5]);
+    assert_eq!(state.last_inside, vec![false; 5]);
+}
+
+#[test]
+fn insert_checkpoint_target_clamps_inside_boundaries() {
+    use CheckpointKind::{End, Split, Start};
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string())); // n = 4
+    // target 0 would displace Start -> clamped to 1.
+    let idx = state
+        .insert_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "x".into(), Some(0))
+        .unwrap();
+    assert_eq!(idx, 1);
+    assert_eq!(kinds(&state), vec![Start, Split, Split, Split, End]);
+
+    // A large target clamps to n - 1 (just before End), never past it.
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string())); // n = 4
+    let idx = state
+        .insert_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "x".into(), Some(99))
+        .unwrap();
+    assert_eq!(idx, 3);
+    let t = state.track.as_ref().unwrap();
+    assert_eq!(t.checkpoints[4].kind, CheckpointKind::End);
+}
+
+#[test]
+fn insert_checkpoint_bootstraps_empty_then_single_track() {
+    // First placement on an empty track is index 0 (-> Start after
+    // re-derive); the second appends as index 1 (-> End).
+    let mut state = SplitsState::default();
+    state.load(
+        Track {
+            name: "empty".into(),
+            checkpoints: vec![],
+        },
+        Some(TEST_MAP.to_string()),
+    );
+    let idx0 = state
+        .insert_checkpoint(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)), "a".into(), None)
+        .unwrap();
+    assert_eq!(idx0, 0);
+    assert_eq!(kinds(&state), vec![CheckpointKind::Start]);
+
+    let idx1 = state
+        .insert_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "b".into(), None)
+        .unwrap();
+    assert_eq!(idx1, 1);
+    assert_eq!(
+        kinds(&state),
+        vec![CheckpointKind::Start, CheckpointKind::End]
+    );
+}
+
+#[test]
+fn insert_checkpoint_preserves_middle_pause_resume() {
+    use CheckpointKind::{End, Pause, Resume, Split, Start};
+    let mut state = SplitsState::default();
+    state.load(
+        track_with_kinds(&[Start, Pause, Resume, End]),
+        Some(TEST_MAP.to_string()),
+    );
+    // Insert at index 2 (between Pause and Resume).
+    state
+        .insert_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "x".into(), Some(2))
+        .unwrap();
+    assert_eq!(kinds(&state), vec![Start, Pause, Split, Resume, End]);
+}
+
+#[test]
+fn delete_checkpoint_preserves_middle_maploaded() {
+    use CheckpointKind::{End, Split, Start};
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp(Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // idx 1, deleted
+            cp_map(Split, "mid"),                          // idx 2, MapLoaded
+            cp(End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some(TEST_MAP.to_string()));
+    state.delete_checkpoint(1).unwrap();
+    let t = state.track.as_ref().unwrap();
+    assert_eq!(t.checkpoints.len(), 3);
+    assert_eq!(kinds(&state), vec![Start, Split, End]);
+    // The surviving MapLoaded checkpoint kept its trigger and middle kind.
+    assert!(matches!(t.checkpoints[1].trigger, Trigger::MapLoaded(ref n) if n == "mid"));
+    // Latches reallocated, run re-armed.
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false; 3]);
+}
+
+#[test]
+fn delete_checkpoint_refuses_below_two() {
+    let mut state = SplitsState::default();
+    state.load(
+        track_with_kinds(&[CheckpointKind::Start, CheckpointKind::End]),
+        Some(TEST_MAP.to_string()),
+    );
+    assert!(state.delete_checkpoint(0).is_err());
+    assert_eq!(state.track.as_ref().unwrap().checkpoints.len(), 2);
+}
+
+#[test]
+fn delete_checkpoint_out_of_range_errors() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    assert!(state.delete_checkpoint(99).is_err());
+}
+
+#[test]
+fn set_label_does_not_resize_or_rearm() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    // Pretend a run is mid-flight.
+    state.next_index = 2;
+    state.fired = vec![true, true, false, false];
+    state.set_label(1, "renamed".into()).unwrap();
+    assert_eq!(
+        state.track.as_ref().unwrap().checkpoints[1].label,
+        "renamed"
+    );
+    // Non-structural: cursor and latches untouched.
+    assert_eq!(state.next_index, 2);
+    assert_eq!(state.fired, vec![true, true, false, false]);
+}
+
+#[test]
+fn mutation_methods_error_without_track() {
+    let mut state = SplitsState::default();
+    assert!(
+        state
+            .insert_checkpoint(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)), "x".into(), None)
+            .is_err()
+    );
+    assert!(state.delete_checkpoint(0).is_err());
+    assert!(state.set_label(0, "x".into()).is_err());
+}
+
+#[test]
+fn expected_kind_boundaries() {
+    use CheckpointKind::{End, Split, Start};
+    assert_eq!(expected_kind(0, 4), Start);
+    assert_eq!(expected_kind(1, 4), Split);
+    assert_eq!(expected_kind(2, 4), Split);
+    assert_eq!(expected_kind(3, 4), End);
+    // Single-checkpoint track: index 0 is Start (the i == 0 branch wins
+    // over the last-index branch).
+    assert_eq!(expected_kind(0, 1), Start);
+}

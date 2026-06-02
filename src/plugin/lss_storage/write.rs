@@ -25,20 +25,31 @@ use crate::{
 /// Persist `track` to the on-disk store for `(server, map)`. Spawned
 /// as a tokio task so blocking `fs` calls don't stall the game tick.
 /// Errors are surfaced via chat-print; the function itself never panics.
-pub async fn save_track(track: Track, server_display: String, map: String) {
+///
+/// A new on-disk version always chat-prints the written filename (both
+/// the background autosave and the manual command). `announce` only
+/// controls the *no-op* case: the manual `/client LiveSplit save`
+/// command passes `true` so the user gets "already saved (no changes)"
+/// feedback when the dedup gate skips the write; the background autosave
+/// passes `false` to stay silent on no-op.
+pub async fn save_track(track: Track, server_display: String, map: String, announce: bool) {
     let dir = path::track_dir(&server_display, &map);
     let category = path::sanitize_component(&track.name);
 
     match save_track_to(&track, &server_display, &dir, &category) {
         Ok(SaveOutcome::Wrote(path)) => {
             info!(?path, "wrote new track version");
-            let filename = path
-                .file_name()
-                .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            let filename = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
             chat_print_async(format!("&aLiveSplit: saved {filename}"));
         }
         Ok(SaveOutcome::AlreadyLatest) => {
             debug!("track unchanged from latest on-disk version; no write");
+            if announce {
+                chat_print_async("&eLiveSplit: track already saved (no changes)".to_owned());
+            }
         }
         Err(e) => {
             chat_print_async(format!("&cLiveSplit: failed to save track: {e:#}"));

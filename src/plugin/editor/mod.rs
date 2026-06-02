@@ -1,0 +1,280 @@
+//! In-world track editor: place / delete / relabel checkpoints with chat
+//! commands and block clicks.
+//!
+//! `/client LiveSplit edit on` enables edit mode and installs a
+//! `Server.SendBlock` override ([`hook`]). While armed (via
+//! `edit place`), the next two block clicks are consumed as the two
+//! corners of a checkpoint AABB instead of building/breaking world blocks
+//! -- the clicked block is reverted locally and never sent to the server.
+//! The committed checkpoint flows through `splits::editor_insert`, the
+//! same `Track` mutation path the chat/`.lss` sources feed into, and
+//! becomes visible through the existing `/client LiveSplit show` HUD on
+//! the next tick.
+//!
+//! v1 is **commands + chat feedback only** -- no in-world rendering
+//! (rubber-band preview, corner-A marker, selection highlight). Those are
+//! deferred to the track-editor HUD work.
+
+pub mod hook;
+
+use std::{cell::RefCell, os::raw::c_int};
+
+use classicube_sys::{BlockID, Game_UpdateBlock, IVec3};
+use tracing::debug;
+
+use crate::{
+    chat_print,
+    plugin::{
+        module::Module,
+        splits::{self, geometry},
+    },
+};
+
+/// Placeholder label committed when a checkpoint is placed via a block
+/// click. Non-empty so the chat encoder / `.lss` writer accept it (both
+/// require non-empty labels); override with
+/// `/client LiveSplit edit label <i> <text>`.
+const PLACEHOLDER_LABEL: &str = "checkpoint";
+
+/// A placement armed via `edit place`, waiting for its two corner
+/// clicks. `corner_a` is `None` until the first click lands.
+struct Pending {
+    /// Insert position passed to `splits::editor_insert` once both
+    /// corners are clicked (`None` = append before End).
+    target: Option<usize>,
+    corner_a: Option<IVec3>,
+}
+
+struct EditorState {
+    /// Edit mode on/off (`edit on` / `edit off`). When off, the
+    /// `SendBlock` hook (if still installed) passes every click through.
+    enabled: bool,
+    /// `Some` once `edit place` arms a placement; `None` otherwise.
+    pending: Option<Pending>,
+    /// `edit select <i>` target, consumed by `delete` without an explicit
+    /// index (and by future HUD selection highlighting).
+    selected: Option<usize>,
+}
+
+thread_local! {
+    static EDITOR_STATE: RefCell<EditorState> = const {
+        RefCell::new(EditorState {
+            enabled: false,
+            pending: None,
+            selected: None,
+        })
+    };
+}
+
+/// `edit on` / `edit off`. Installs the `SendBlock` hook on enable and
+/// uninstalls it on disable; also clears any half-armed placement when
+/// turning off.
+pub fn set_enabled(on: bool) {
+    EDITOR_STATE.with_borrow_mut(|s| {
+        s.enabled = on;
+        if !on {
+            s.pending = None;
+        }
+    });
+    if on {
+        hook::install();
+        chat_print("&aLiveSplit: edit mode ON");
+        chat_print("&e  /client LiveSplit edit place, then click two blocks for a checkpoint");
+    } else {
+        hook::uninstall();
+        chat_print("&aLiveSplit: edit mode OFF");
+    }
+}
+
+/// `edit place [i]`. Arm a placement: the next two block clicks become a
+/// checkpoint's corners. `target` is `None` to append before End or
+/// `Some(i)` to insert at index `i`.
+pub fn arm_place(target: Option<usize>) {
+    let armed = EDITOR_STATE.with_borrow_mut(|s| {
+        if !s.enabled {
+            return false;
+        }
+        s.pending = Some(Pending {
+            target,
+            corner_a: None,
+        });
+        true
+    });
+    if !armed {
+        chat_print("&cLiveSplit: enable edit mode first (/client LiveSplit edit on)");
+        return;
+    }
+    match target {
+        None => chat_print("&aLiveSplit: armed - click corner A (appends before End)"),
+        Some(i) => chat_print(&format!(
+            "&aLiveSplit: armed - click corner A (inserts at #{i})"
+        )),
+    }
+}
+
+/// `edit cancel`. Discard a half-armed placement.
+pub fn cancel() {
+    let had = EDITOR_STATE.with_borrow_mut(|s| s.pending.take().is_some());
+    if had {
+        chat_print("&aLiveSplit: placement cancelled");
+    } else {
+        chat_print("&eLiveSplit: nothing to cancel");
+    }
+}
+
+/// `edit select <i>`. Remember a checkpoint index for a later bare
+/// `edit delete`.
+pub fn select(i: usize) {
+    EDITOR_STATE.with_borrow_mut(|s| s.selected = Some(i));
+    chat_print(&format!("&aLiveSplit: selected checkpoint #{i}"));
+}
+
+/// `edit delete [i]`. Delete `i`, or the `edit select`ed index when no
+/// explicit index is given.
+pub fn delete(i: Option<usize>) {
+    let Some(idx) = i.or_else(|| EDITOR_STATE.with_borrow(|s| s.selected)) else {
+        chat_print("&cLiveSplit: no checkpoint selected (use edit select <i> or edit delete <i>)");
+        return;
+    };
+    if splits::editor_delete(idx) {
+        // Drop a now-stale selection pointing at the removed slot.
+        EDITOR_STATE.with_borrow_mut(|s| {
+            if s.selected == Some(idx) {
+                s.selected = None;
+            }
+        });
+    }
+}
+
+/// `edit label <i> <text>`. Relabel a checkpoint.
+pub fn set_label(i: usize, text: String) {
+    splits::editor_set_label(i, text);
+}
+
+/// `edit clear`. Drop the loaded track and reset editor state so the
+/// player can author a fresh one from scratch.
+pub fn clear() {
+    splits::clear_track();
+    EDITOR_STATE.with_borrow_mut(|s| {
+        s.pending = None;
+        s.selected = None;
+    });
+}
+
+/// What a `SendBlock` click resolved to after consulting editor state.
+enum ClickOutcome {
+    /// Not in edit mode / not armed: let the block change flow through.
+    Ignore,
+    /// First corner recorded; revert the block and wait for corner B.
+    CornerA,
+    /// Second corner recorded; revert the block and commit the AABB.
+    CornerB {
+        a: IVec3,
+        b: IVec3,
+        target: Option<usize>,
+    },
+}
+
+/// Called from the [`hook`]'s `Server.SendBlock` override for every block
+/// the player places/breaks. Returns `true` when the editor consumed the
+/// click as a checkpoint corner (the caller then suppresses the
+/// server-notify), `false` to pass the block change through unchanged.
+///
+/// When a placement is armed, the click is always consumed: the local
+/// world block the engine already mutated is reverted via
+/// `Game_UpdateBlock` (which does NOT re-enter `SendBlock`, so no
+/// recursion), then recorded as corner A or combined with A into a
+/// committed checkpoint.
+pub(super) fn consume_click(x: c_int, y: c_int, z: c_int, old: BlockID) -> bool {
+    // Scope the EDITOR_STATE borrow to the decision; the revert +
+    // splits mutation happen after it's released so the SendBlock hook
+    // can't double-borrow editor state, and `editor_insert`'s own
+    // splits borrow stays independent.
+    let outcome = EDITOR_STATE.with_borrow_mut(|s| {
+        if !s.enabled {
+            return ClickOutcome::Ignore;
+        }
+        let Some(pending) = s.pending.as_mut() else {
+            return ClickOutcome::Ignore;
+        };
+        match pending.corner_a {
+            None => {
+                pending.corner_a = Some(IVec3 { x, y, z });
+                ClickOutcome::CornerA
+            }
+            Some(a) => {
+                let target = pending.target;
+                s.pending = None;
+                ClickOutcome::CornerB {
+                    a,
+                    b: IVec3 { x, y, z },
+                    target,
+                }
+            }
+        }
+    });
+
+    match outcome {
+        ClickOutcome::Ignore => false,
+        ClickOutcome::CornerA => {
+            revert_block(x, y, z, old);
+            chat_print("&aLiveSplit: corner A set; click corner B");
+            true
+        }
+        ClickOutcome::CornerB { a, b, target } => {
+            revert_block(x, y, z, old);
+            let aabb = geometry::aabb_from_block_corners(a, b);
+            splits::editor_insert(aabb, PLACEHOLDER_LABEL.to_owned(), target);
+            true
+        }
+    }
+}
+
+/// Restore the block the engine already changed locally. `Game_UpdateBlock`
+/// updates only the local world (unlike `Game_ChangeBlock` it does not
+/// call back into `Server.SendBlock`), so the edit click leaves the map
+/// untouched and there's no hook recursion.
+fn revert_block(x: c_int, y: c_int, z: c_int, old: BlockID) {
+    // SAFETY: `Game_UpdateBlock` is a `CC_API` engine fn; we're on the
+    // main thread (input dispatch), with in-range world coords supplied
+    // by the engine's own `SendBlock` call.
+    unsafe {
+        Game_UpdateBlock(x, y, z, old);
+    }
+}
+
+pub struct EditorModule;
+
+impl EditorModule {
+    pub fn init() -> Self {
+        // The hook is installed lazily on `edit on`, not here:
+        // `Server.SendBlock` is set by `SPConnection_Init` /
+        // `MPConnection_Init` on world load / connect, so it may still be
+        // unpopulated at plugin construction.
+        Self
+    }
+}
+
+impl Module for EditorModule {
+    fn free(&mut self) {
+        hook::uninstall();
+        EDITOR_STATE.with_borrow_mut(|s| {
+            s.enabled = false;
+            s.pending = None;
+            s.selected = None;
+        });
+        debug!("EditorModule freed; SendBlock hook uninstalled, editor state cleared");
+    }
+
+    fn on_new_map_loaded(&mut self) {
+        // A half-armed placement holds corner coords from the old map;
+        // they're meaningless after a map change.
+        EDITOR_STATE.with_borrow_mut(|s| s.pending = None);
+        // Reconnect / world reload re-points `Server.SendBlock` (e.g.
+        // `MPConnection_Init`), dropping our hook. Re-assert it while
+        // edit mode is on.
+        if EDITOR_STATE.with_borrow(|s| s.enabled) {
+            hook::install();
+        }
+    }
+}
