@@ -32,6 +32,10 @@ pub async fn save_track(track: Track, server_display: String, map: String) {
     match save_track_to(&track, &server_display, &dir, &category) {
         Ok(SaveOutcome::Wrote(path)) => {
             info!(?path, "wrote new track version");
+            let filename = path
+                .file_name()
+                .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            chat_print_async(format!("&aLiveSplit: saved {filename}"));
         }
         Ok(SaveOutcome::AlreadyLatest) => {
             debug!("track unchanged from latest on-disk version; no write");
