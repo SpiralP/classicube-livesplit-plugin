@@ -191,6 +191,54 @@ pub struct Track {
     pub checkpoints: Vec<Checkpoint>,
 }
 
+/// Short English name for a checkpoint kind, used in chat listings.
+pub(crate) fn kind_name(kind: CheckpointKind) -> &'static str {
+    match kind {
+        CheckpointKind::Start => "Start",
+        CheckpointKind::Split => "Split",
+        CheckpointKind::Pause => "Pause",
+        CheckpointKind::Resume => "Resume",
+        CheckpointKind::End => "End",
+    }
+}
+
+/// Render the loaded track as chat lines for `/client LiveSplit splits`: a
+/// header line plus one line per checkpoint, in track order. `fired` and
+/// `next_index` come straight off [`SplitsState`]. Each row's marker is `>`
+/// for the next eligible checkpoint (`next_index`), `x` for an
+/// already-fired one, or blank for pending, color-coded to match. The kind
+/// column shows the kind name for an `Aabb` trigger or `(map)` for a
+/// `MapLoaded` map-transition; the quoted text is always the checkpoint's
+/// label.
+#[must_use]
+pub(crate) fn format_splits(track: &Track, fired: &[bool], next_index: usize) -> Vec<String> {
+    let total = track.checkpoints.len();
+    let fired_count = fired.iter().filter(|b| **b).count();
+    let mut lines = Vec::with_capacity(total + 1);
+    lines.push(format!(
+        "&aLiveSplit: track \"{}\" ({total} checkpoints, {fired_count} fired)",
+        track.name
+    ));
+    for (i, cp) in track.checkpoints.iter().enumerate() {
+        // Next wins over fired (they can't both apply for one index, but
+        // order the check so the run's target always reads as `>`).
+        let (color, marker) = if i == next_index {
+            ("&e", '>')
+        } else if fired.get(i).copied().unwrap_or(false) {
+            ("&8", 'x')
+        } else {
+            ("&f", ' ')
+        };
+        let kind_col = match cp.trigger {
+            Trigger::Aabb(_) => kind_name(cp.kind),
+            Trigger::MapLoaded(_) => "(map)",
+        };
+        let label = &cp.label;
+        lines.push(format!("{color} {marker} #{i} {kind_col:<6} \"{label}\""));
+    }
+    lines
+}
+
 #[derive(Debug, Default)]
 pub struct SplitsState {
     pub track: Option<Track>,

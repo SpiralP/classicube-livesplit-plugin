@@ -29,7 +29,7 @@ use crate::{
 
 thread_local! {
     /// Shared with the tick closure so chat-command accessors (`load_fixture`,
-    /// `reset_run`, `print_status`) can mutate the same state without going
+    /// `reset_run`, `print_splits`) can mutate the same state without going
     /// back through `MAIN_MODULE` — which would already be borrowed mutably
     /// whenever those callbacks fire from the game thread.
     static STATE: RefCell<Option<Rc<RefCell<SplitsState>>>> = const { RefCell::new(None) };
@@ -487,39 +487,23 @@ pub fn clear_track() {
     }
 }
 
-pub fn print_status() {
-    let Some(snapshot) = with_state(|s| {
-        s.track.as_ref().map(|t| {
-            let total = t.checkpoints.len();
-            let name = t.name.clone();
-            let fired = s.fired.iter().filter(|b| **b).count();
-            let next = t.checkpoints.get(s.next_index).map(|cp| {
-                let kind = match cp.kind {
-                    CheckpointKind::Start => "Start",
-                    CheckpointKind::Split => "Split",
-                    CheckpointKind::Pause => "Pause",
-                    CheckpointKind::Resume => "Resume",
-                    CheckpointKind::End => "End",
-                };
-                let label = cp.label.as_str();
-                format!("{kind} \"{label}\"")
-            });
-            (name, total, fired, next)
-        })
+/// Chat-print the full checkpoint list for `/client LiveSplit splits`: a
+/// header line plus one line per checkpoint (see
+/// [`geometry::format_splits`]).
+pub fn print_splits() {
+    let Some(lines) = with_state(|s| {
+        s.track
+            .as_ref()
+            .map(|t| geometry::format_splits(t, &s.fired, s.next_index))
     }) else {
         chat_print("&eLiveSplit: plugin not active");
         return;
     };
-    let Some((name, total, fired, next)) = snapshot else {
+    let Some(lines) = lines else {
         chat_print("&eLiveSplit: no track loaded (try /client LiveSplit loadtest)");
         return;
     };
-    chat_print(&format!(
-        "&aLiveSplit: track \"{name}\" - {fired}/{total} fired"
-    ));
-    if let Some(next) = next {
-        chat_print(&format!("&e  next: {next}"));
-    } else {
-        chat_print("&e  run complete");
+    for line in &lines {
+        chat_print(line);
     }
 }

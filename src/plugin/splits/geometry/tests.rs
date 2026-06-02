@@ -1545,3 +1545,46 @@ fn move_checkpoint_errors_without_track() {
     let mut state = SplitsState::default();
     assert!(state.move_checkpoint(0, 1).is_err());
 }
+
+#[test]
+fn format_splits_lists_each_checkpoint_with_markers() {
+    let track = Track {
+        name: "doubletower".into(),
+        checkpoints: vec![
+            Checkpoint {
+                kind: CheckpointKind::Start,
+                trigger: Trigger::Aabb(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))),
+                label: "spawn".into(),
+            },
+            Checkpoint {
+                kind: CheckpointKind::Split,
+                trigger: Trigger::Aabb(aabb((10.0, 0.0, 0.0), (11.0, 1.0, 1.0))),
+                label: "midpoint".into(),
+            },
+            // A `MapLoaded` trigger renders `(map)` in the kind column.
+            Checkpoint {
+                kind: CheckpointKind::Split,
+                trigger: Trigger::MapLoaded("tower2".into()),
+                label: "tower2".into(),
+            },
+            Checkpoint {
+                kind: CheckpointKind::End,
+                trigger: Trigger::Aabb(aabb((20.0, 0.0, 0.0), (21.0, 1.0, 1.0))),
+                label: "finish".into(),
+            },
+        ],
+    };
+    // Checkpoint 0 fired; run cursor sits on index 1 (the next target).
+    let fired = [true, false, false, false];
+    let lines = format_splits(&track, &fired, 1);
+    assert_eq!(
+        lines,
+        vec![
+            "&aLiveSplit: track \"doubletower\" (4 checkpoints, 1 fired)".to_string(),
+            "&8 x #0 Start  \"spawn\"".to_string(),
+            "&e > #1 Split  \"midpoint\"".to_string(),
+            "&f   #2 (map)  \"tower2\"".to_string(),
+            "&f   #3 End    \"finish\"".to_string(),
+        ]
+    );
+}
