@@ -358,18 +358,18 @@ pub fn reset_timer_if_was_running(was_in_progress: bool) {
     }
 }
 
-/// Insert an editor-placed AABB checkpoint, returning the index it
+/// Add an editor-placed AABB checkpoint, returning the index it
 /// landed at. Samples `run_in_progress()` **before** the mutation (which
 /// re-arms the cursor to 0) so an aborted run can notify the timer.
 /// Chat-prints the outcome. `None` if the plugin is mid-teardown or the
 /// mutation failed.
 ///
-/// A `None` `target` (bare `edit place`) resolves to the end of the
+/// A `None` `target` (bare `edit add`) resolves to the end of the
 /// player's current map section via `geometry::append_index_for_section`
 /// (just before that section's terminating `MapLoaded`, or before `End` on
 /// the last/only section). An explicit `Some(i)` is passed through verbatim
-/// for `insert_checkpoint` to clamp.
-pub fn editor_insert(aabb: Aabb, label: String, target: Option<usize>) -> Option<usize> {
+/// for `add_checkpoint` to clamp.
+pub fn editor_add(aabb: Aabb, label: String, target: Option<usize>) -> Option<usize> {
     let was_in_progress = run_in_progress();
     // Resolve the live world outside the borrow: `read_world_name()` reads
     // the engine `World` static + tab-list, never `STATE` (same reason
@@ -385,7 +385,7 @@ pub fn editor_insert(aabb: Aabb, label: String, target: Option<usize>) -> Option
                 )
             })
         });
-        s.insert_checkpoint(aabb, label, resolved)
+        s.add_checkpoint(aabb, label, resolved)
     }) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
@@ -403,30 +403,30 @@ pub fn editor_insert(aabb: Aabb, label: String, target: Option<usize>) -> Option
     }
 }
 
-/// Delete the checkpoint at `i`. Like [`editor_insert`], samples
+/// Remove the checkpoint at `i`. Like [`editor_add`], samples
 /// run-progress before mutating and notifies a connected timer if it
 /// aborted a run. Returns `true` on success.
-pub fn editor_delete(i: usize) -> bool {
+pub fn editor_remove(i: usize) -> bool {
     let was_in_progress = run_in_progress();
-    match with_state(|s| s.delete_checkpoint(i)) {
+    match with_state(|s| s.remove_checkpoint(i)) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             false
         }
         Some(Err(e)) => {
-            chat_print(&format!("&cLiveSplit: cannot delete checkpoint: {e}"));
+            chat_print(&format!("&cLiveSplit: cannot remove checkpoint: {e}"));
             false
         }
         Some(Ok(())) => {
             reset_timer_if_was_running(was_in_progress);
-            chat_print(&format!("&aLiveSplit: deleted checkpoint #{i}"));
+            chat_print(&format!("&aLiveSplit: removed checkpoint #{i}"));
             true
         }
     }
 }
 
 /// Reorder: move the checkpoint at `from` to index `to`. Like
-/// [`editor_insert`], samples run-progress before mutating and notifies a
+/// [`editor_add`], samples run-progress before mutating and notifies a
 /// connected timer if it aborted a run. `from == to` is a friendly no-op
 /// (the mutator is pure remove+insert, so the guard lives here). Returns
 /// `true` on success.
@@ -475,7 +475,7 @@ pub fn editor_set_label(i: usize, text: String) -> bool {
 }
 
 /// Re-draw the AABB of the existing checkpoint at `i` (`edit redraw`).
-/// Like [`editor_insert`], samples run-progress before mutating and
+/// Like [`editor_add`], samples run-progress before mutating and
 /// notifies a connected timer if it aborted a run. Returns `true` on
 /// success.
 pub fn editor_relocate(i: usize, aabb: Aabb) -> bool {

@@ -1,12 +1,12 @@
-//! In-world track editor: place / delete / relabel checkpoints with chat
+//! In-world track editor: place / remove / relabel checkpoints with chat
 //! commands and block clicks.
 //!
 //! `/client LiveSplit edit on` enables edit mode and installs a
 //! `Server.SendBlock` override ([`hook`]). While armed (via
-//! `edit place`), the next two block clicks are consumed as the two
+//! `edit add`), the next two block clicks are consumed as the two
 //! corners of a checkpoint AABB instead of building/breaking world blocks
 //! -- the clicked block is reverted locally and never sent to the server.
-//! The committed checkpoint flows through `splits::editor_insert`, the
+//! The committed checkpoint flows through `splits::editor_add`, the
 //! same `Track` mutation path the chat/`.lss` sources feed into, and
 //! becomes visible through the existing `/client LiveSplit show` HUD on
 //! the next tick.
@@ -39,15 +39,15 @@ const PLACEHOLDER_LABEL: &str = "checkpoint";
 /// Which mutation a pending two-click capture commits to.
 #[derive(Clone, Copy)]
 enum PendingOp {
-    /// `edit place [i]`: insert a checkpoint. `None` appends to the
+    /// `edit add [i]`: insert a checkpoint. `None` appends to the
     /// current map section; `Some(i)` inserts at index `i`.
-    Place(Option<usize>),
+    Add(Option<usize>),
     /// `edit redraw <i>`: replace the AABB of the existing checkpoint at
     /// `i`, keeping its kind / label / position.
     Redraw(usize),
 }
 
-/// A two-click capture armed via `edit place` / `edit redraw`, waiting
+/// A two-click capture armed via `edit add` / `edit redraw`, waiting
 /// for its two corner clicks. `corner_a` is `None` until the first click
 /// lands.
 struct Pending {
@@ -60,11 +60,8 @@ struct EditorState {
     /// Edit mode on/off (`edit on` / `edit off`). When off, the
     /// `SendBlock` hook (if still installed) passes every click through.
     enabled: bool,
-    /// `Some` once `edit place` arms a placement; `None` otherwise.
+    /// `Some` once `edit add` arms a placement; `None` otherwise.
     pending: Option<Pending>,
-    /// `edit select <i>` target, consumed by `delete` without an explicit
-    /// index (and by future HUD selection highlighting).
-    selected: Option<usize>,
 }
 
 thread_local! {
@@ -72,7 +69,6 @@ thread_local! {
         RefCell::new(EditorState {
             enabled: false,
             pending: None,
-            selected: None,
         })
     };
 }
@@ -90,24 +86,24 @@ pub fn set_enabled(on: bool) {
     if on {
         hook::install();
         chat_print("&aLiveSplit: edit mode ON");
-        chat_print("&e  /client LiveSplit edit place, then click two blocks for a checkpoint");
+        chat_print("&e  /client LiveSplit edit add, then click two blocks for a checkpoint");
     } else {
         hook::uninstall();
         chat_print("&aLiveSplit: edit mode OFF");
     }
 }
 
-/// `edit place [i]`. Arm a placement: the next two block clicks become a
+/// `edit add [i]`. Arm a placement: the next two block clicks become a
 /// checkpoint's corners. `target` is `None` to append to the player's
 /// current map section (before its terminating `MapLoaded`, or before
 /// `End` on the last/only map) or `Some(i)` to insert at index `i`.
-pub fn arm_place(target: Option<usize>) {
+pub fn arm_add(target: Option<usize>) {
     let armed = EDITOR_STATE.with_borrow_mut(|s| {
         if !s.enabled {
             return false;
         }
         s.pending = Some(Pending {
-            op: PendingOp::Place(target),
+            op: PendingOp::Add(target),
             corner_a: None,
         });
         true
@@ -127,7 +123,7 @@ pub fn arm_place(target: Option<usize>) {
 /// `edit redraw <i>`. Arm a two-click capture that replaces the AABB of
 /// the existing checkpoint at `i` (keeping its index, kind, and label)
 /// instead of inserting a new one. No index pre-check here -- consistent
-/// with [`arm_place`]; the authoritative range / `MapLoaded` check lives
+/// with [`arm_add`]; the authoritative range / `MapLoaded` check lives
 /// in `splits::editor_relocate` and surfaces via chat at commit. The two
 /// clicks revert locally, so a wasted arm leaves the map untouched.
 pub fn arm_redraw(i: usize) {
@@ -160,28 +156,9 @@ pub fn cancel() {
     }
 }
 
-/// `edit select <i>`. Remember a checkpoint index for a later bare
-/// `edit delete`.
-pub fn select(i: usize) {
-    EDITOR_STATE.with_borrow_mut(|s| s.selected = Some(i));
-    chat_print(&format!("&aLiveSplit: selected checkpoint #{i}"));
-}
-
-/// `edit delete [i]`. Delete `i`, or the `edit select`ed index when no
-/// explicit index is given.
-pub fn delete(i: Option<usize>) {
-    let Some(idx) = i.or_else(|| EDITOR_STATE.with_borrow(|s| s.selected)) else {
-        chat_print("&cLiveSplit: no checkpoint selected (use edit select <i> or edit delete <i>)");
-        return;
-    };
-    if splits::editor_delete(idx) {
-        // Drop a now-stale selection pointing at the removed slot.
-        EDITOR_STATE.with_borrow_mut(|s| {
-            if s.selected == Some(idx) {
-                s.selected = None;
-            }
-        });
-    }
+/// `edit remove <i>`. Remove the checkpoint at `i`.
+pub fn remove(i: usize) {
+    splits::editor_remove(i);
 }
 
 /// `edit label <i> <text>`. Relabel a checkpoint.
@@ -191,7 +168,7 @@ pub fn set_label(i: usize, text: String) {
 
 /// `edit move <from> <to>`. Reorder a checkpoint within the route: the
 /// one at `from` lands at index `to`, shifting the rest. No arming /
-/// block clicks (purely index-based), so -- like `delete` / `label` --
+/// block clicks (purely index-based), so -- like `remove` / `label` --
 /// it doesn't gate on edit mode.
 pub fn reindex(from: usize, to: usize) {
     splits::editor_reindex(from, to);
@@ -203,7 +180,6 @@ pub fn clear() {
     splits::clear_track();
     EDITOR_STATE.with_borrow_mut(|s| {
         s.pending = None;
-        s.selected = None;
     });
 }
 
@@ -230,7 +206,7 @@ enum ClickOutcome {
 pub(super) fn consume_click(x: c_int, y: c_int, z: c_int, old: BlockID) -> bool {
     // Scope the EDITOR_STATE borrow to the decision; the revert +
     // splits mutation happen after it's released so the SendBlock hook
-    // can't double-borrow editor state, and `editor_insert`'s own
+    // can't double-borrow editor state, and `editor_add`'s own
     // splits borrow stays independent.
     let outcome = EDITOR_STATE.with_borrow_mut(|s| {
         if !s.enabled {
@@ -267,8 +243,8 @@ pub(super) fn consume_click(x: c_int, y: c_int, z: c_int, old: BlockID) -> bool 
             revert_block(x, y, z, old);
             let aabb = geometry::aabb_from_block_corners(a, b);
             match op {
-                PendingOp::Place(target) => {
-                    splits::editor_insert(aabb, PLACEHOLDER_LABEL.to_owned(), target);
+                PendingOp::Add(target) => {
+                    splits::editor_add(aabb, PLACEHOLDER_LABEL.to_owned(), target);
                 }
                 PendingOp::Redraw(i) => {
                     splits::editor_relocate(i, aabb);
@@ -310,7 +286,6 @@ impl Module for EditorModule {
         EDITOR_STATE.with_borrow_mut(|s| {
             s.enabled = false;
             s.pending = None;
-            s.selected = None;
         });
         debug!("EditorModule freed; SendBlock hook uninstalled, editor state cleared");
     }

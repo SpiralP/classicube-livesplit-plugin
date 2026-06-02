@@ -299,7 +299,7 @@ impl SplitsState {
         crate::plugin::pause_triggers::pause_clear_all();
     }
 
-    /// Insert a new `Split`/AABB checkpoint and return the index it
+    /// Add a new `Split`/AABB checkpoint and return the index it
     /// landed at. `target` is `None` to append (just before `End`) or
     /// `Some(i)` to insert at a specific slot. On a populated track
     /// (>= 2 checkpoints) the insert position is clamped to
@@ -310,7 +310,7 @@ impl SplitsState {
     /// (re-derived to `End`). After the structural change the boundary
     /// kinds are re-derived and the per-checkpoint latches reallocated
     /// (the run re-arms to index 0). `Err` if no track is loaded.
-    pub fn insert_checkpoint(
+    pub fn add_checkpoint(
         &mut self,
         aabb: Aabb,
         label: String,
@@ -346,12 +346,12 @@ impl SplitsState {
         Ok(idx)
     }
 
-    /// Delete the checkpoint at index `i`. Refuses if the track would
+    /// Remove the checkpoint at index `i`. Refuses if the track would
     /// drop below 2 checkpoints (Start + End minimum, mirroring the
     /// `n >= 2` floor the payload serializer enforces). Re-derives the
     /// boundary kinds and reallocates the latches afterward. `Err` if
     /// no track is loaded or `i` is out of range.
-    pub fn delete_checkpoint(&mut self, i: usize) -> Result<()> {
+    pub fn remove_checkpoint(&mut self, i: usize) -> Result<()> {
         {
             let Some(track) = self.track.as_mut() else {
                 bail!("no track loaded");
@@ -361,7 +361,7 @@ impl SplitsState {
                 bail!("checkpoint index {i} out of range (track has {n})");
             }
             if n <= 2 {
-                bail!("cannot delete: a track needs at least 2 checkpoints (Start + End)");
+                bail!("cannot remove: a track needs at least 2 checkpoints (Start + End)");
             }
             track.checkpoints.remove(i);
         }
@@ -381,7 +381,7 @@ impl SplitsState {
     /// former `Start`/`End` moved inward becomes a `Split`. Reordering can
     /// invert a `Pause`/`Resume` pair, so the post-move track is validated
     /// against [`validate_pause_resume_pairing`]; on failure the move is
-    /// rolled back and `Err` returned (unlike `insert`/`delete`, which
+    /// rolled back and `Err` returned (unlike `insert`/`remove`, which
     /// defer pairing checks to the load-entry gates -- reordering is the
     /// operation most likely to invert a pair). On success the latches are
     /// reallocated and the run re-armed to index 0. `Err` if no track is
@@ -466,7 +466,7 @@ impl SplitsState {
     /// defined checkpoints survive an edit elsewhere in the list. The one
     /// exception: a `Start`/`End` kind stranded at a middle index is
     /// demoted to `Split` -- only a reorder (`move_checkpoint`) can shift
-    /// a former boundary inward; for `insert`/`delete` that demotion loop
+    /// a former boundary inward; for `insert`/`remove` that demotion loop
     /// is a no-op (they never move a boundary into the middle).
     fn re_derive_kinds(&mut self) {
         let Some(track) = self.track.as_mut() else {
@@ -710,7 +710,7 @@ pub fn aabbs_on_map(
     out
 }
 
-/// Index at which a bare `edit place` (no explicit target) should insert:
+/// Index at which a bare `edit add` (no explicit target) should insert:
 /// the end of the section whose map name matches `world` -- just before
 /// that section's terminating `Trigger::MapLoaded` -- so a new checkpoint
 /// lands at the end of the map the player is currently standing on. Falls
@@ -720,7 +720,7 @@ pub fn aabbs_on_map(
 /// seed `current_map` from `starting_map`, advance on each `MapLoaded`.
 ///
 /// First-match on a route that revisits a map name (`A -> B -> A`): the
-/// author uses an explicit `place <i>` to target a later instance, since
+/// author uses an explicit `add <i>` to target a later instance, since
 /// there's no reliable in-world signal to pick between same-named sections
 /// during authoring (the run cursor is `0` whenever no run is in progress).
 #[must_use]

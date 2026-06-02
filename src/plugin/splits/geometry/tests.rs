@@ -887,11 +887,11 @@ fn aabbs_on_map_marks_next_index_respecting_scope() {
     );
 }
 
-// ---- append_index_for_section (bare `edit place` default target) ----
+// ---- append_index_for_section (bare `edit add` default target) ----
 
 #[test]
 fn append_index_single_map_appends_before_end() {
-    // No MapLoaded: a bare place always lands just before End (n - 1),
+    // No MapLoaded: a bare add always lands just before End (n - 1),
     // the prior behavior.
     let track = Track {
         name: "T".into(),
@@ -974,7 +974,7 @@ fn append_index_off_route_or_unknown_world_appends_before_end() {
 #[test]
 fn append_index_revisited_map_targets_first_section() {
     // A -> B -> A. Standing on A targets the FIRST A section (before the
-    // first MapLoaded at idx 2); an explicit place <i> is the override for
+    // first MapLoaded at idx 2); an explicit add <i> is the override for
     // a later instance.
     let track = Track {
         name: "T".into(),
@@ -1268,12 +1268,12 @@ fn kinds(state: &SplitsState) -> Vec<CheckpointKind> {
 }
 
 #[test]
-fn insert_checkpoint_appends_before_end_and_rederives_boundaries() {
+fn add_checkpoint_appends_before_end_and_rederives_boundaries() {
     use CheckpointKind::{End, Split, Start};
     let mut state = SplitsState::default();
     state.load(linear_track(), Some(TEST_MAP.to_string())); // Start, Split, Split, End
     let idx = state
-        .insert_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "new".into(), None)
+        .add_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "new".into(), None)
         .unwrap();
     assert_eq!(idx, 3, "append lands just before End at index n - 1");
     let t = state.track.as_ref().unwrap();
@@ -1287,13 +1287,13 @@ fn insert_checkpoint_appends_before_end_and_rederives_boundaries() {
 }
 
 #[test]
-fn insert_checkpoint_target_clamps_inside_boundaries() {
+fn add_checkpoint_target_clamps_inside_boundaries() {
     use CheckpointKind::{End, Split, Start};
     let mut state = SplitsState::default();
     state.load(linear_track(), Some(TEST_MAP.to_string())); // n = 4
     // target 0 would displace Start -> clamped to 1.
     let idx = state
-        .insert_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "x".into(), Some(0))
+        .add_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "x".into(), Some(0))
         .unwrap();
     assert_eq!(idx, 1);
     assert_eq!(kinds(&state), vec![Start, Split, Split, Split, End]);
@@ -1302,7 +1302,7 @@ fn insert_checkpoint_target_clamps_inside_boundaries() {
     let mut state = SplitsState::default();
     state.load(linear_track(), Some(TEST_MAP.to_string())); // n = 4
     let idx = state
-        .insert_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "x".into(), Some(99))
+        .add_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "x".into(), Some(99))
         .unwrap();
     assert_eq!(idx, 3);
     let t = state.track.as_ref().unwrap();
@@ -1310,7 +1310,7 @@ fn insert_checkpoint_target_clamps_inside_boundaries() {
 }
 
 #[test]
-fn insert_checkpoint_bootstraps_empty_then_single_track() {
+fn add_checkpoint_bootstraps_empty_then_single_track() {
     // First placement on an empty track is index 0 (-> Start after
     // re-derive); the second appends as index 1 (-> End).
     let mut state = SplitsState::default();
@@ -1322,13 +1322,13 @@ fn insert_checkpoint_bootstraps_empty_then_single_track() {
         Some(TEST_MAP.to_string()),
     );
     let idx0 = state
-        .insert_checkpoint(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)), "a".into(), None)
+        .add_checkpoint(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)), "a".into(), None)
         .unwrap();
     assert_eq!(idx0, 0);
     assert_eq!(kinds(&state), vec![CheckpointKind::Start]);
 
     let idx1 = state
-        .insert_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "b".into(), None)
+        .add_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "b".into(), None)
         .unwrap();
     assert_eq!(idx1, 1);
     assert_eq!(
@@ -1338,7 +1338,7 @@ fn insert_checkpoint_bootstraps_empty_then_single_track() {
 }
 
 #[test]
-fn insert_checkpoint_preserves_middle_pause_resume() {
+fn add_checkpoint_preserves_middle_pause_resume() {
     use CheckpointKind::{End, Pause, Resume, Split, Start};
     let mut state = SplitsState::default();
     state.load(
@@ -1347,26 +1347,26 @@ fn insert_checkpoint_preserves_middle_pause_resume() {
     );
     // Insert at index 2 (between Pause and Resume).
     state
-        .insert_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "x".into(), Some(2))
+        .add_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "x".into(), Some(2))
         .unwrap();
     assert_eq!(kinds(&state), vec![Start, Pause, Split, Resume, End]);
 }
 
 #[test]
-fn delete_checkpoint_preserves_middle_maploaded() {
+fn remove_checkpoint_preserves_middle_maploaded() {
     use CheckpointKind::{End, Split, Start};
     let track = Track {
         name: "T".into(),
         checkpoints: vec![
             cp(Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
-            cp(Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // idx 1, deleted
+            cp(Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // idx 1, removed
             cp_map(Split, "mid"),                          // idx 2, MapLoaded
             cp(End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
         ],
     };
     let mut state = SplitsState::default();
     state.load(track, Some(TEST_MAP.to_string()));
-    state.delete_checkpoint(1).unwrap();
+    state.remove_checkpoint(1).unwrap();
     let t = state.track.as_ref().unwrap();
     assert_eq!(t.checkpoints.len(), 3);
     assert_eq!(kinds(&state), vec![Start, Split, End]);
@@ -1378,21 +1378,21 @@ fn delete_checkpoint_preserves_middle_maploaded() {
 }
 
 #[test]
-fn delete_checkpoint_refuses_below_two() {
+fn remove_checkpoint_refuses_below_two() {
     let mut state = SplitsState::default();
     state.load(
         track_with_kinds(&[CheckpointKind::Start, CheckpointKind::End]),
         Some(TEST_MAP.to_string()),
     );
-    assert!(state.delete_checkpoint(0).is_err());
+    assert!(state.remove_checkpoint(0).is_err());
     assert_eq!(state.track.as_ref().unwrap().checkpoints.len(), 2);
 }
 
 #[test]
-fn delete_checkpoint_out_of_range_errors() {
+fn remove_checkpoint_out_of_range_errors() {
     let mut state = SplitsState::default();
     state.load(linear_track(), Some(TEST_MAP.to_string()));
-    assert!(state.delete_checkpoint(99).is_err());
+    assert!(state.remove_checkpoint(99).is_err());
 }
 
 #[test]
@@ -1484,10 +1484,10 @@ fn mutation_methods_error_without_track() {
     let mut state = SplitsState::default();
     assert!(
         state
-            .insert_checkpoint(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)), "x".into(), None)
+            .add_checkpoint(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)), "x".into(), None)
             .is_err()
     );
-    assert!(state.delete_checkpoint(0).is_err());
+    assert!(state.remove_checkpoint(0).is_err());
     assert!(state.set_label(0, "x".into()).is_err());
     assert!(
         state

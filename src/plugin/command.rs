@@ -49,8 +49,8 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit open               (reveal the loaded track file)");
     chat_print("&e  /client LiveSplit show [on|off]    (toggle checkpoint HUD)");
     chat_print("&e  /client LiveSplit edit on|off");
-    chat_print("&e  /client LiveSplit edit place [i] | redraw <i> | cancel | select <i>");
-    chat_print("&e  /client LiveSplit edit delete [i] | move <from> <to>");
+    chat_print("&e  /client LiveSplit edit add [i] | redraw <i> | cancel");
+    chat_print("&e  /client LiveSplit edit remove <i> | move <from> <to>");
     chat_print("&e  /client LiveSplit edit label <i> <text> | clear");
     chat_print("&e  /client LiveSplit mb <subcmd ...>  (one chained /mb to deliver all lines)");
     chat_print(
@@ -230,22 +230,16 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         // `splits::editor_*`).
         ["edit", "on"] => editor::set_enabled(true),
         ["edit", "off"] => editor::set_enabled(false),
-        ["edit", "place"] => editor::arm_place(None),
-        ["edit", "place", i] => {
+        ["edit", "add"] => editor::arm_add(None),
+        ["edit", "add", i] => {
             if let Some(idx) = parse_index(i) {
-                editor::arm_place(Some(idx));
+                editor::arm_add(Some(idx));
             }
         }
         ["edit", "cancel"] => editor::cancel(),
-        ["edit", "select", i] => {
+        ["edit", "remove", i] => {
             if let Some(idx) = parse_index(i) {
-                editor::select(idx);
-            }
-        }
-        ["edit", "delete"] => editor::delete(None),
-        ["edit", "delete", i] => {
-            if let Some(idx) = parse_index(i) {
-                editor::delete(Some(idx));
+                editor::remove(idx);
             }
         }
         ["edit", "move", from, to] => {
@@ -331,9 +325,8 @@ impl CommandModule {
                     "&a/client LiveSplit load [filename]",
                     "&a/client LiveSplit open",
                     "&a/client LiveSplit show [on|off]",
-                    "&a/client LiveSplit edit on|off | place [i] | redraw <i> | cancel | select \
-                     <i>",
-                    "&a/client LiveSplit edit delete [i] | move <from> <to>",
+                    "&a/client LiveSplit edit on|off | add [i] | redraw <i> | cancel",
+                    "&a/client LiveSplit edit remove <i> | move <from> <to>",
                     "&a/client LiveSplit edit label <i> <text> | clear",
                     "&a/client LiveSplit mb <subcmd ...>",
                     "&a/client LiveSplit nas",
