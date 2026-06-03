@@ -33,11 +33,16 @@ use crate::plugin::{module::Module, splits};
 /// Private selection-id range for plugin-owned checkpoint boxes. Server
 /// commands (`/zone`, `/measure`) allocate selection ids from 0 upward,
 /// so a high base keeps us from clobbering them (and vice versa).
-/// `200..=255` gives 56 simultaneous boxes; the engine's `SELECTIONS_MAX`
-/// is 256. The label layer honors the same cap so the two stay in lockstep.
+/// `200..=254` gives 55 simultaneous boxes; the engine's `SELECTIONS_MAX`
+/// is 256. Id 255 is reserved for the editor's rubber-band preview
+/// (`editor::preview::PREVIEW_SELECTION_ID`). The label layer honors the
+/// same cap so the two stay in lockstep.
 const HUD_ID_BASE: u8 = 200;
-/// Number of ids in `HUD_ID_BASE..=u8::MAX` (= 56).
-const HUD_ID_COUNT: usize = (u8::MAX - HUD_ID_BASE) as usize + 1;
+/// Highest id (inclusive) for HUD checkpoint boxes. Id 255 is reserved for
+/// the editor's rubber-band preview.
+const HUD_ID_LAST: u8 = 254;
+/// Number of ids in `HUD_ID_BASE..=HUD_ID_LAST` (= 55).
+const HUD_ID_COUNT: usize = (HUD_ID_LAST - HUD_ID_BASE) as usize + 1;
 
 thread_local! {
     /// Whether the HUD is currently showing. Set by the

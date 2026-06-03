@@ -11,14 +11,18 @@
 //! becomes visible through the existing `/client LiveSplit show` HUD on
 //! the next tick.
 //!
-//! v1 is **commands + chat feedback only** -- no in-world rendering
-//! (rubber-band preview, corner-A marker, selection highlight). Those are
-//! deferred to the track-editor HUD work.
+//! A **rubber-band preview** (selection 255, white translucent) shows the
+//! tentative AABB while the player aims after clicking corner A; it updates
+//! every frame via [`preview`] and disappears on commit or cancel.
+//! Corner-A marker, selection highlight, and edit-mode status overlay are
+//! still deferred to the track-editor HUD work.
 
 pub mod hook;
+mod preview;
 
 use std::{cell::RefCell, os::raw::c_int};
 
+use classicube_helpers::tick::TickEventHandler;
 use classicube_sys::{BlockID, Game_UpdateBlock, IVec3};
 use tracing::debug;
 
@@ -291,32 +295,44 @@ fn revert_block(x: c_int, y: c_int, z: c_int, old: BlockID) {
     }
 }
 
-pub struct EditorModule;
+pub struct EditorModule {
+    _tick: TickEventHandler,
+}
 
 impl EditorModule {
     pub fn init() -> Self {
-        // The hook is installed lazily on `edit on`, not here:
+        // Sweep the preview id in case a prior Init leaked it (crash /
+        // abnormal teardown). Removing a non-installed id is a harmless no-op.
+        preview::clear();
+        // The SendBlock hook is installed lazily on `edit on`, not here:
         // `Server.SendBlock` is set by `SPConnection_Init` /
         // `MPConnection_Init` on world load / connect, so it may still be
         // unpopulated at plugin construction.
-        Self
+        let mut tick = TickEventHandler::new();
+        tick.on(|_| preview::reconcile());
+        Self { _tick: tick }
     }
 }
 
 impl Module for EditorModule {
     fn free(&mut self) {
+        preview::clear();
         hook::uninstall();
         EDITOR_STATE.with_borrow_mut(|s| {
             s.enabled = false;
             s.pending = None;
         });
         debug!("EditorModule freed; SendBlock hook uninstalled, editor state cleared");
+        // `_tick` unregisters via its own Drop after `free` returns; no
+        // render or tick event fires during synchronous teardown.
     }
 
     fn on_new_map_loaded(&mut self) {
         // A half-armed placement holds corner coords from the old map;
-        // they're meaningless after a map change.
+        // they're meaningless after a map change. Invalidate the preview
+        // cache -- the engine already wiped its selection list on map load.
         EDITOR_STATE.with_borrow_mut(|s| s.pending = None);
+        preview::invalidate();
         // Reconnect / world reload re-points `Server.SendBlock` (e.g.
         // `MPConnection_Init`), dropping our hook. Re-assert it while
         // edit mode is on.

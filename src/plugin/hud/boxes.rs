@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use classicube_sys::{IVec3, PackedCol, PackedCol_Make, Selections_Add, Selections_Remove, Vec3};
 use tracing::{debug, warn};
 
-use super::{HUD_ID_BASE, HUD_ID_COUNT};
+use super::{HUD_ID_BASE, HUD_ID_COUNT, HUD_ID_LAST};
 use crate::plugin::{
     module::Module,
     splits::geometry::{Aabb, CheckpointKind},
@@ -104,7 +104,7 @@ pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String, bool)]) {
 
     ACTIVE_IDS.with_borrow_mut(|ids| {
         // zip stops at the shorter side, capping installs at HUD_ID_COUNT.
-        for (id, (kind, aabb, is_next)) in (HUD_ID_BASE..=u8::MAX).zip(&want) {
+        for (id, (kind, aabb, is_next)) in (HUD_ID_BASE..=HUD_ID_LAST).zip(&want) {
             let p1 = ivec3(aabb.min);
             let p2 = ivec3(aabb.max);
             unsafe { Selections_Add(id, &p1, &p2, color_for_kind(*kind, *is_next)) };
@@ -126,7 +126,7 @@ fn invalidate() {
 
 /// Remove every selection in our private id range and forget them.
 fn clear_all_selections() {
-    for id in HUD_ID_BASE..=u8::MAX {
+    for id in HUD_ID_BASE..=HUD_ID_LAST {
         unsafe { Selections_Remove(id) };
     }
     ACTIVE_IDS.with_borrow_mut(Vec::clear);
