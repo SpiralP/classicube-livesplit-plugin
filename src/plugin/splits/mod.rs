@@ -296,7 +296,7 @@ pub fn current_track() -> Option<Track> {
 /// The next-flag is keyed off `SplitsState.next_index`, so it highlights
 /// from the moment a track loads: pre-run (`next_index == 0`) the Start
 /// checkpoint is flagged; post-run (`next_index == n`) nothing matches.
-pub fn visible_aabbs() -> Vec<(CheckpointKind, Aabb, String, bool)> {
+pub fn visible_aabbs() -> Vec<(usize, CheckpointKind, Aabb, String, bool)> {
     // Resolve the map name outside `with_state`: `read_world_name()`
     // reads the engine `World` static + tab-list, never `STATE`, so
     // keeping it out of the closure avoids nesting a borrow.

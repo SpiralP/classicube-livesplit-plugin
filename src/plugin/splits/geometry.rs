@@ -802,7 +802,7 @@ pub fn aabbs_on_map(
     starting_map: Option<&str>,
     world: Option<&str>,
     next_index: Option<usize>,
-) -> Vec<(CheckpointKind, Aabb, String, bool)> {
+) -> Vec<(usize, CheckpointKind, Aabb, String, bool)> {
     let mut current_map = starting_map;
     let mut out = Vec::new();
     for (i, cp) in track.checkpoints.iter().enumerate() {
@@ -811,7 +811,7 @@ pub fn aabbs_on_map(
                 if let (Some(t), Some(w)) = (current_map, world)
                     && t == w
                 {
-                    out.push((cp.kind, *aabb, cp.label.clone(), next_index == Some(i)));
+                    out.push((i, cp.kind, *aabb, cp.label.clone(), next_index == Some(i)));
                 }
             }
             Trigger::MapLoaded(name) => current_map = Some(name.as_str()),

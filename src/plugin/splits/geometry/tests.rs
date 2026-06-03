@@ -713,24 +713,28 @@ fn aabbs_on_map_single_map_shows_all_on_load_map_none_off_it() {
     // behavior is exercised in `aabbs_on_map_marks_next_index_respecting_scope`).
     let expected = vec![
         (
+            0_usize,
             CheckpointKind::Start,
             aabb((0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
             String::new(),
             false,
         ),
         (
+            1_usize,
             CheckpointKind::Split,
             aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
             String::new(),
             false,
         ),
         (
+            2_usize,
             CheckpointKind::Split,
             aabb((20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
             String::new(),
             false,
         ),
         (
+            3_usize,
             CheckpointKind::End,
             aabb((30.0, 0.0, 0.0), (32.0, 4.0, 2.0)),
             String::new(),
@@ -773,12 +777,14 @@ fn aabbs_on_map_multi_map_partitions_by_scope() {
         aabbs_on_map(&track, Some("starting"), Some("starting"), None),
         vec![
             (
+                0_usize,
                 CheckpointKind::Start,
                 aabb((0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
                 String::new(),
                 false,
             ),
             (
+                1_usize,
                 CheckpointKind::Split,
                 aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
                 String::new(),
@@ -792,12 +798,14 @@ fn aabbs_on_map_multi_map_partitions_by_scope() {
         aabbs_on_map(&track, Some("starting"), Some("mapname"), None),
         vec![
             (
+                3_usize,
                 CheckpointKind::Split,
                 aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
                 String::new(),
                 false,
             ),
             (
+                4_usize,
                 CheckpointKind::End,
                 aabb((20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
                 String::new(),
@@ -836,8 +844,20 @@ fn aabbs_on_map_marks_next_index_respecting_scope() {
     assert_eq!(
         aabbs_on_map(&track, Some("starting"), Some("starting"), Some(0)),
         vec![
-            (CheckpointKind::Start, start_box, String::new(), true),
-            (CheckpointKind::Split, mid_box, String::new(), false),
+            (
+                0_usize,
+                CheckpointKind::Start,
+                start_box,
+                String::new(),
+                true
+            ),
+            (
+                1_usize,
+                CheckpointKind::Split,
+                mid_box,
+                String::new(),
+                false
+            ),
         ],
     );
 
@@ -845,8 +865,14 @@ fn aabbs_on_map_marks_next_index_respecting_scope() {
     assert_eq!(
         aabbs_on_map(&track, Some("starting"), Some("starting"), Some(1)),
         vec![
-            (CheckpointKind::Start, start_box, String::new(), false),
-            (CheckpointKind::Split, mid_box, String::new(), true),
+            (
+                0_usize,
+                CheckpointKind::Start,
+                start_box,
+                String::new(),
+                false
+            ),
+            (1_usize, CheckpointKind::Split, mid_box, String::new(), true),
         ],
     );
 
@@ -856,8 +882,14 @@ fn aabbs_on_map_marks_next_index_respecting_scope() {
     assert_eq!(
         aabbs_on_map(&track, Some("starting"), Some("mapname"), Some(1)),
         vec![
-            (CheckpointKind::Split, mid_box, String::new(), false),
-            (CheckpointKind::End, end_box, String::new(), false),
+            (
+                3_usize,
+                CheckpointKind::Split,
+                mid_box,
+                String::new(),
+                false
+            ),
+            (4_usize, CheckpointKind::End, end_box, String::new(), false),
         ],
         "out-of-scope next index must not mark a same-geometry box on another map",
     );
@@ -866,8 +898,8 @@ fn aabbs_on_map_marks_next_index_respecting_scope() {
     assert_eq!(
         aabbs_on_map(&track, Some("starting"), Some("mapname"), Some(3)),
         vec![
-            (CheckpointKind::Split, mid_box, String::new(), true),
-            (CheckpointKind::End, end_box, String::new(), false),
+            (3_usize, CheckpointKind::Split, mid_box, String::new(), true),
+            (4_usize, CheckpointKind::End, end_box, String::new(), false),
         ],
     );
 

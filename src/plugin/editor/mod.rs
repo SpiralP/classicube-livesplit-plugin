@@ -80,6 +80,13 @@ thread_local! {
     };
 }
 
+/// Whether edit mode is currently on (`edit on`). Read by the HUD label
+/// layer to decide whether to annotate each label with its `(<kind>)`
+/// suffix (an authoring aid, hidden during normal play).
+pub fn is_enabled() -> bool {
+    EDITOR_STATE.with_borrow(|s| s.enabled)
+}
+
 /// `edit on` / `edit off`. Installs the `SendBlock` hook on enable and
 /// uninstalls it on disable; also clears any half-armed placement when
 /// turning off.

@@ -78,9 +78,9 @@ impl Module for BoxesModule {
 /// `visible` set (the boxes ignore the per-checkpoint label but keep the
 /// `is_next` highlight flag). Cheap no-op while the want-state is
 /// unchanged.
-pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String, bool)]) {
+pub(super) fn reconcile(visible: &[(usize, CheckpointKind, Aabb, String, bool)]) {
     let want: Vec<(CheckpointKind, Aabb, bool)> =
-        visible.iter().map(|(k, a, _, n)| (*k, *a, *n)).collect();
+        visible.iter().map(|(_, k, a, _, n)| (*k, *a, *n)).collect();
 
     if LAST_APPLIED.with_borrow(|last| *last == want) {
         return;

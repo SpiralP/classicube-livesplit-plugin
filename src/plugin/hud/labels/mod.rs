@@ -3,9 +3,11 @@
 //! The boxes are engine selection cuboids (see the parent module) and can't
 //! carry text -- the CPE label slot is parsed off the packet and discarded.
 //! This layer adds real GPU text: per checkpoint, a drop-shadowed texture of
-//! its `<label> (<kind>)` annotation tinted to the box's kind hue, drawn each
-//! frame as a camera-facing billboard anchored just above its box (occluded
-//! by terrain, shrinking with distance).
+//! its label tinted to the box's kind hue, drawn each frame as a
+//! camera-facing billboard anchored just above its box (occluded by terrain,
+//! shrinking with distance). In edit mode the label gains a `(<kind>)` suffix
+//! to identify every box at a glance; outside edit mode the raw label is
+//! shown without annotation.
 //!
 //! Split across three submodules:
 //! - [`texture`] -- label string to `OwnedTexture` (lazy font, transparent
@@ -28,7 +30,7 @@ mod texture;
 #[cfg(test)]
 mod tests;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use classicube_helpers::events::gfx::{ContextLostEventHandler, ContextRecreatedEventHandler};
 use classicube_sys::{Gfx, OwnedScreen, OwnedTexture, Vec3};
@@ -36,9 +38,14 @@ use tracing::debug;
 
 use super::HUD_ID_COUNT;
 use crate::plugin::{
+    editor,
     module::Module,
     splits::geometry::{Aabb, CheckpointKind, kind_name},
 };
+
+/// One entry from `splits::visible_aabbs()`: the track-wide index, kind, AABB,
+/// raw label, and is-next flag.
+type VisibleEntry = (usize, CheckpointKind, Aabb, String, bool);
 
 /// Vertical gap (in blocks) between the top of a box and the bottom of its
 /// label, so the text floats just clear of the cuboid's top face.
@@ -67,13 +74,19 @@ thread_local! {
     static LABELS: RefCell<Vec<Label>> = const { RefCell::new(Vec::new()) };
 
     /// The `(kind, aabb, label, is_next)` set [`LABELS`] was last built
-    /// from -- the reconcile diff key (the raw `visible` 4-tuple, not the
-    /// decorated display string). Mirrors the boxes' `LAST_APPLIED` cache so
-    /// the two layers invalidate in lockstep on a map crossing, and carrying
-    /// `is_next` rebuilds the textures when the run cursor advances (the
-    /// marker/color moves to the new next checkpoint).
-    static LAST_LABEL_SET: RefCell<Vec<(CheckpointKind, Aabb, String, bool)>> =
+    /// from -- part of the reconcile diff key (the raw `visible` 4-tuple, not
+    /// the decorated display string). Mirrors the boxes' `LAST_APPLIED` cache
+    /// so the two layers invalidate in lockstep on a map crossing, and
+    /// carrying `is_next` rebuilds the textures when the run cursor advances
+    /// (the marker/color moves to the new next checkpoint).
+    static LAST_LABEL_SET: RefCell<Vec<VisibleEntry>> =
         const { RefCell::new(Vec::new()) };
+
+    /// The edit-mode flag at the last [`reconcile`] build -- the other half of
+    /// the diff key. Edit mode controls whether labels carry a `(<kind>)`
+    /// suffix, so a toggle must trigger a rebuild even when the `visible` set
+    /// itself is unchanged.
+    static LAST_EDIT_MODE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Owns the layer's RAII registration handles. Everything else this layer
@@ -133,12 +146,14 @@ impl Module for LabelsModule {
 
 /// Rebuild the cached label textures to match `visible` (the map-scoped
 /// `(kind, aabb, label, is_next)` set, already capped/derived by the splits
-/// layer). No-op when `visible` equals the cached set. The `kind` drives the
-/// label color (matching the box hue) and the ` (<kind>)` suffix via
-/// [`display_label`]; `is_next` adds the `> ` marker on the run's next-target
-/// label. Both are part of the diff key so the cache tracks the boxes
-/// exactly.
-pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String, bool)]) {
+/// layer). No-op when both `visible` and the current edit-mode flag equal the
+/// cached values. The `kind` drives the label color (matching the box hue);
+/// `is_next` adds the `&e> ` marker on the run's next-target label. In edit
+/// mode [`display_label`] appends a `(<kind>)` suffix to every label. All
+/// three inputs are part of the diff key so the cache tracks the boxes
+/// exactly, and a `/client LiveSplit edit on|off` toggle re-renders even when
+/// the checkpoint set is unchanged.
+pub(super) fn reconcile(visible: &[VisibleEntry]) {
     // While the GPU context is lost we can't (re)build textures. Leave the
     // cache exactly as `context::context_lost`'s `invalidate()` left it
     // (empty) and bail, so a tick landing in the lost window doesn't
@@ -147,7 +162,10 @@ pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String, bool)]) {
         return;
     }
 
-    if LAST_LABEL_SET.with_borrow(|last| last.as_slice() == visible) {
+    let edit_mode = editor::is_enabled();
+    let unchanged = LAST_EDIT_MODE.get() == edit_mode
+        && LAST_LABEL_SET.with_borrow(|last| last.as_slice() == visible);
+    if unchanged {
         return;
     }
 
@@ -155,8 +173,8 @@ pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String, bool)]) {
     // actually draw (the parent reconcile zips installs against the same
     // range).
     let mut labels = Vec::new();
-    for (kind, aabb, label, is_next) in visible.iter().take(HUD_ID_COUNT) {
-        let display = display_label(*kind, label, *is_next);
+    for (idx, kind, aabb, label, is_next) in visible.iter().take(HUD_ID_COUNT) {
+        let display = display_label(*kind, *idx, label, *is_next, edit_mode);
         let Some(tex) = texture::create_label_texture(&display) else {
             continue;
         };
@@ -184,25 +202,53 @@ pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String, bool)]) {
         last.clear();
         last.extend_from_slice(visible);
     });
+    LAST_EDIT_MODE.set(edit_mode);
     debug!(count, "rebuilt floating checkpoint labels");
 }
 
-/// Build the floating display string for a checkpoint: the raw `label` (when
-/// set) plus a ` (<kind>)` suffix, tinted to the box's kind hue. The run's
-/// next-target gets a leading `&e> ` marker (yellow positional cue that
-/// composes with the kind color following it). Unlabeled checkpoints still
-/// render `(<kind>)` so every box is identifiable. The kind color is
-/// re-asserted before the suffix so a label carrying its own `&` codes can't
-/// bleed into the annotation.
-fn display_label(kind: CheckpointKind, label: &str, is_next: bool) -> String {
+/// Build the floating display string for a checkpoint.
+///
+/// In **edit mode** every label carries a `(<kind>)` suffix (authoring aid so
+/// each box is identifiable at a glance, even without a user-set label). The
+/// kind color is re-asserted before the suffix so a label carrying its own `&`
+/// codes can't bleed into the annotation.
+///
+/// Outside edit mode the raw `label` is shown without annotation (the kind
+/// information is already conveyed by the box color). An empty label yields an
+/// empty string -- `create_label_texture` returns `None` for a zero-width
+/// string, so the label is simply skipped.
+///
+/// In both modes the run's next-target gets a leading `&e> ` marker (yellow
+/// positional cue). The marker is suppressed when the body is empty so we
+/// don't draw a lone `> `.
+fn display_label(
+    kind: CheckpointKind,
+    index: usize,
+    label: &str,
+    is_next: bool,
+    edit_mode: bool,
+) -> String {
     let code = kind_color_code(kind);
-    let name = kind_name(kind).to_ascii_lowercase();
-    let body = if label.is_empty() {
-        format!("{code}({name})")
+    let body = if edit_mode {
+        // Authoring view: index + kind suffix so every box is identifiable
+        // at a glance, even when unlabeled.
+        let name = kind_name(kind).to_ascii_lowercase();
+        if label.is_empty() {
+            format!("{code}{index}: ({name})")
+        } else {
+            format!("{code}{index}: {label} {code}({name})")
+        }
+    } else if label.is_empty() {
+        // Play view: raw label only; nothing to show for an unlabeled box.
+        String::new()
     } else {
-        format!("{code}{label} {code}({name})")
+        format!("{code}{label}")
     };
-    if is_next { format!("&e> {body}") } else { body }
+    if is_next && !body.is_empty() {
+        format!("&e> {body}")
+    } else {
+        body
+    }
 }
 
 /// The `&`-code whose hue matches `boxes::color_for_kind`'s `PackedCol` for
@@ -226,4 +272,5 @@ fn kind_color_code(kind: CheckpointKind) -> &'static str {
 fn invalidate() {
     LABELS.with_borrow_mut(Vec::clear);
     LAST_LABEL_SET.with_borrow_mut(Vec::clear);
+    LAST_EDIT_MODE.set(false);
 }
