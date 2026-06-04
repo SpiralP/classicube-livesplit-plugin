@@ -1880,7 +1880,9 @@ fn format_splits_lists_each_checkpoint_with_markers() {
                 label: "midpoint".into(),
             },
             // A `MapLoaded` trigger renders `Map (name) "label"` -- the map
-            // name in dim parens before the quoted label (they're independent).
+            // name in dim parens before the quoted label (they're independent)
+            // -- in its own light-purple `&d` color, distinct from the yellow
+            // `&e` of a real `Split` row.
             Checkpoint {
                 kind: CheckpointKind::Split,
                 trigger: Trigger::MapLoaded("tower2".into()),
@@ -1902,7 +1904,7 @@ fn format_splits_lists_each_checkpoint_with_markers() {
             "&aLiveSplit: track \"doubletower\" (4 checkpoints, 1 fired)".to_string(),
             "&a x #0 &aStart &7(0,0,0 1,1,1) &a\"spawn\"".to_string(),
             "&e> #1 &eSplit &7(10,0,0 3,2,5) &e\"midpoint\" &e<".to_string(),
-            "&e   #2 &eMap &7(tower2) &e\"Second Tower\"".to_string(),
+            "&d   #2 &dMap &7(tower2) &d\"Second Tower\"".to_string(),
             "&c   #3 &cEnd &7(20,0,0 1,1,1) &c\"finish\"".to_string(),
         ]
     );
@@ -1940,7 +1942,7 @@ fn format_splits_map_loaded_next_target_shows_map_name_in_bracket() {
         vec![
             "&aLiveSplit: track \"multi-map\" (3 checkpoints, 1 fired)".to_string(),
             "&a x #0 &aStart &7(0,0,0 1,1,1) &a\"start\"".to_string(),
-            "&e> #1 &eMap &7(novacity) &e\"Nova City\" &e<".to_string(),
+            "&e> #1 &dMap &7(novacity) &d\"Nova City\" &e<".to_string(),
             "&c   #2 &cEnd &7(5,0,0 1,1,1) &c\"end\"".to_string(),
         ]
     );

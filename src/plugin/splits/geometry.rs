@@ -241,18 +241,28 @@ pub(crate) fn kind_color_code(kind: CheckpointKind) -> &'static str {
     }
 }
 
+/// ClassiCube `&`-code for a `MapLoaded` map-transition row in the chat
+/// listing. A `MapLoaded` checkpoint's `kind` is always `Split`, so without
+/// this override the row would render the same yellow as a real `Split`.
+/// Light purple -- distinct from every [`kind_color_code`] hue. HUD color
+/// tables don't need a matching entry: map-transition checkpoints have no
+/// AABB, so they never draw a box or label.
+const MAP_COLOR_CODE: &str = "&d";
+
 /// Render the loaded track as chat lines for `/client LiveSplit splits`: a
 /// header line plus one line per checkpoint, in track order. `fired` comes
 /// straight off [`SplitsState`]; `next_index` is `Some(i)` for the run's
 /// next-target row (highlighted `&e> ... &e<`) or `None` to suppress the
-/// marker entirely (edit mode -- there's no live run to target). Each row is
-/// colored by checkpoint kind (matching the HUD). The marker char conveys
-/// run status: `x` (fired) or blank (pending) for non-next rows. The kind
-/// column shows the kind name for an `Aabb` trigger or `Map` for a
-/// `MapLoaded` map-transition. Each row shows a dim-gray detail in parens
-/// before the quoted label: `Aabb` rows show the box's min corner and size
-/// `(x,y,z w,h,d)` (size, not max corner -- shorter, and matches the
-/// `<min> <size>` wire form); `MapLoaded` rows show the destination map name.
+/// marker entirely (edit mode -- there's no live run to target). `Aabb` rows
+/// are colored by checkpoint kind (matching the HUD); `MapLoaded` rows use
+/// [`MAP_COLOR_CODE`] (light purple) so they're visually distinct from
+/// `Split` rows. The marker char conveys run status: `x` (fired) or blank
+/// (pending) for non-next rows. The kind column shows the kind name for an
+/// `Aabb` trigger or `Map` for a `MapLoaded` map-transition. Each row shows a
+/// dim-gray detail in parens before the quoted label: `Aabb` rows show the
+/// box's min corner and size `(x,y,z w,h,d)` (size, not max corner -- shorter,
+/// and matches the `<min> <size>` wire form); `MapLoaded` rows show the
+/// destination map name.
 #[must_use]
 pub(crate) fn format_splits(
     track: &Track,
@@ -267,14 +277,15 @@ pub(crate) fn format_splits(
         track.name
     ));
     for (i, cp) in track.checkpoints.iter().enumerate() {
-        let code = kind_color_code(cp.kind);
-        // Dim-gray detail in parens before the label, then re-emit `code` so
-        // the label keeps its kind color: Aabb rows show the box's min corner
-        // and size `(x,y,z w,h,d)` (size, not max corner -- shorter, matches
-        // the wire `<min> <size>` form); Map rows show the destination map
-        // name.
-        let (kind_col, paren) = match &cp.trigger {
+        // Dim-gray detail in parens before the label, then re-emit the kind
+        // color so the label keeps it: Aabb rows show the box's min corner and
+        // size `(x,y,z w,h,d)` (size, not max corner -- shorter, matches the
+        // wire `<min> <size>` form), colored by checkpoint kind; Map rows show
+        // the destination map name in MAP_COLOR_CODE (light purple), distinct
+        // from a Split row.
+        let (code, kind_col, paren) = match &cp.trigger {
             Trigger::Aabb(aabb) => {
+                let code = kind_color_code(cp.kind);
                 let lo = vec3_to_u16(aabb.min);
                 let hi = vec3_to_u16(aabb.max);
                 let sz = [
@@ -283,6 +294,7 @@ pub(crate) fn format_splits(
                     hi[2].saturating_sub(lo[2]),
                 ];
                 (
+                    code,
                     kind_name(cp.kind),
                     format!(
                         "&7({},{},{} {},{},{}) {code}",
@@ -290,7 +302,9 @@ pub(crate) fn format_splits(
                     ),
                 )
             }
-            Trigger::MapLoaded(name) => ("Map", format!("&7({name}) {code}")),
+            Trigger::MapLoaded(name) => {
+                (MAP_COLOR_CODE, "Map", format!("&7({name}) {MAP_COLOR_CODE}"))
+            }
         };
         let label = &cp.label;
         lines.push(if Some(i) == next_index {
