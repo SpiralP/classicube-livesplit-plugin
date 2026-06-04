@@ -21,7 +21,7 @@ use crate::{
         module::Module,
         pause_triggers,
         splits::geometry::{
-            Aabb, CheckpointKind, RetypeTarget, SplitsState, Track, observe_map, step,
+            Aabb, Boundary, CheckpointKind, RetypeTarget, SplitsState, Track, observe_map, step,
             validate_pause_resume_pairing,
         },
     },
@@ -545,6 +545,44 @@ pub fn editor_set_kind(i: usize, target: RetypeTarget) -> bool {
         Some(Ok(())) => {
             reset_timer_if_was_running(was_in_progress);
             chat_print(&format!("&aLiveSplit: retyped checkpoint #{i}"));
+            true
+        }
+    }
+}
+
+/// Move the checkpoint at `i` into the `Start` / `End` boundary slot
+/// (`edit kind <i> start|end`). Delegates to
+/// [`geometry::SplitsState::move_to_boundary`], which re-derives boundary
+/// kinds, demotes the displaced former boundary to `Split`, validates
+/// pause/resume pairing (rolling back on inversion), reallocates the
+/// latches, and re-arms the run. Like [`editor_reindex`], samples
+/// run-progress before mutating and notifies a connected timer if it
+/// aborted a run. `Ok(false)` (already the boundary) is a friendly no-op.
+/// Returns `true` when a real move happened.
+pub fn editor_set_boundary(i: usize, which: Boundary) -> bool {
+    let was_in_progress = run_in_progress();
+    let name = match which {
+        Boundary::Start => "Start",
+        Boundary::End => "End",
+    };
+    match with_state(|s| s.move_to_boundary(i, which)) {
+        None => {
+            chat_print("&eLiveSplit: plugin not active");
+            false
+        }
+        Some(Err(e)) => {
+            chat_print(&format!("&cLiveSplit: cannot retype checkpoint: {e}"));
+            false
+        }
+        Some(Ok(false)) => {
+            chat_print(&format!(
+                "&eLiveSplit: checkpoint #{i} is already the {name}"
+            ));
+            false
+        }
+        Some(Ok(true)) => {
+            reset_timer_if_was_running(was_in_progress);
+            chat_print(&format!("&aLiveSplit: made checkpoint #{i} the {name}"));
             true
         }
     }

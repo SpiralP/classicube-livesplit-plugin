@@ -32,7 +32,7 @@ use crate::{
         module::Module,
         splits::{
             self,
-            geometry::{self, CheckpointKind, RetypeTarget},
+            geometry::{self, Boundary, CheckpointKind, RetypeTarget},
         },
     },
 };
@@ -188,12 +188,20 @@ pub fn reindex(from: usize, to: usize) {
     splits::editor_reindex(from, to);
 }
 
-/// `edit kind <i> split|pause|resume`. Retype an existing AABB
-/// checkpoint, keeping its zone. No arming / block clicks (purely
+/// `edit kind <i> start|end|split|pause|resume`. For `split` / `pause` /
+/// `resume`, retype the existing AABB checkpoint in place, keeping its
+/// zone. For `start` / `end` -- position-derived boundary kinds, not
+/// in-place retypes -- move the checkpoint to index 0 / the last index
+/// (demoting the displaced former boundary to `Split`) via
+/// [`splits::editor_set_boundary`]. No arming / block clicks (purely
 /// index-based), so -- like `remove` / `label` / `move` -- it doesn't
 /// gate on edit mode.
 pub fn set_kind(i: usize, kind: CheckpointKind) {
-    splits::editor_set_kind(i, RetypeTarget::Aabb(kind));
+    match kind {
+        CheckpointKind::Start => splits::editor_set_boundary(i, Boundary::Start),
+        CheckpointKind::End => splits::editor_set_boundary(i, Boundary::End),
+        _ => splits::editor_set_kind(i, RetypeTarget::Aabb(kind)),
+    };
 }
 
 /// `edit kind <i> map [name]`. Convert checkpoint #i into a zoneless map

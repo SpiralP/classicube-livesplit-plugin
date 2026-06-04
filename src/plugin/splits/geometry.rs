@@ -206,6 +206,16 @@ pub enum RetypeTarget {
     Map(String),
 }
 
+/// Which boundary slot `edit kind <i> start|end` moves a checkpoint into.
+/// Unlike [`RetypeTarget`], these are not in-place kind swaps: `Start` /
+/// `End` are position-derived, so they map to a reorder via
+/// [`SplitsState::move_to_boundary`] rather than [`SplitsState::set_kind`].
+#[derive(Clone, Copy, Debug)]
+pub enum Boundary {
+    Start,
+    End,
+}
+
 /// Short English name for a checkpoint kind, used in chat listings.
 pub(crate) fn kind_name(kind: CheckpointKind) -> &'static str {
     match kind {
@@ -466,6 +476,36 @@ impl SplitsState {
         }
         self.reset_after_structural_change();
         Ok(())
+    }
+
+    /// `edit kind <i> start|end`: move checkpoint `from` to a boundary slot.
+    /// `Start` targets index 0; `End` targets the last index. Delegates to
+    /// [`Self::move_checkpoint`], which re-derives the moved checkpoint's
+    /// kind to `Start` / `End`, demotes the displaced former boundary to
+    /// `Split`, validates pause/resume pairing (rolling back on inversion),
+    /// reallocates the latches, and re-arms the run. Returns `Ok(false)` as
+    /// a no-op when the checkpoint is already at that boundary (so the
+    /// caller can skip the timer reset); `Ok(true)` when a move happened.
+    /// `Err` if no track is loaded or `from` is out of range.
+    pub fn move_to_boundary(&mut self, from: usize, which: Boundary) -> Result<bool> {
+        let n = {
+            let Some(track) = self.track.as_ref() else {
+                bail!("no track loaded");
+            };
+            track.checkpoints.len()
+        };
+        if from >= n {
+            bail!("checkpoint index {from} out of range (track has {n})");
+        }
+        let to = match which {
+            Boundary::Start => 0,
+            Boundary::End => n - 1,
+        };
+        if from == to {
+            return Ok(false);
+        }
+        self.move_checkpoint(from, to)?;
+        Ok(true)
     }
 
     /// Relabel the checkpoint at index `i`. Non-structural: the kind

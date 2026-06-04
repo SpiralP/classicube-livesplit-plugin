@@ -52,7 +52,7 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit edit on|off");
     chat_print("&e  /client LiveSplit edit add [i] | redraw <i> | cancel");
     chat_print("&e  /client LiveSplit edit remove <i> | move <from> <to>");
-    chat_print("&e  /client LiveSplit edit kind <i> split|pause|resume|map [name]");
+    chat_print("&e  /client LiveSplit edit kind <i> start|end|split|pause|resume|map [name]");
     chat_print("&e  /client LiveSplit edit label <i> <text> | clear");
     chat_print("&e  /client LiveSplit mb <subcmd ...>  (one chained /mb to deliver all lines)");
     chat_print(
@@ -117,9 +117,11 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
     let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
     debug!(?args, "chat command");
 
-    // `edit kind <i> split|pause|resume`: parse the index, then dispatch
-    // the AABB-kind retype. The `map` variant has its own arms (it takes
-    // an optional name, not a `CheckpointKind`).
+    // `edit kind <i> start|end|split|pause|resume`: parse the index, then
+    // dispatch. `start`/`end` route through `editor::set_kind` to
+    // `editor_set_boundary` (a boundary-slot reorder); `split`/`pause`/
+    // `resume` route to an in-place AABB-kind retype. The `map` variant
+    // has its own arms (it takes an optional name, not a `CheckpointKind`).
     let kind_arm = |i: &str, kind: CheckpointKind| {
         if let Some(idx) = parse_index(i) {
             editor::set_kind(idx, kind);
@@ -265,6 +267,8 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                 editor::arm_redraw(idx);
             }
         }
+        ["edit", "kind", i, "start"] => kind_arm(i, CheckpointKind::Start),
+        ["edit", "kind", i, "end"] => kind_arm(i, CheckpointKind::End),
         ["edit", "kind", i, "split"] => kind_arm(i, CheckpointKind::Split),
         ["edit", "kind", i, "pause"] => kind_arm(i, CheckpointKind::Pause),
         ["edit", "kind", i, "resume"] => kind_arm(i, CheckpointKind::Resume),
@@ -351,7 +355,7 @@ impl CommandModule {
                     "&a/client LiveSplit show [on|off]",
                     "&a/client LiveSplit edit on|off | add [i] | redraw <i> | cancel",
                     "&a/client LiveSplit edit remove <i> | move <from> <to>",
-                    "&a/client LiveSplit edit kind <i> split|pause|resume|map [name]",
+                    "&a/client LiveSplit edit kind <i> start|end|split|pause|resume|map [name]",
                     "&a/client LiveSplit edit label <i> <text> | clear",
                     "&a/client LiveSplit mb <subcmd ...>",
                     "&a/client LiveSplit nas",

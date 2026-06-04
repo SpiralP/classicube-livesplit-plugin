@@ -1958,3 +1958,126 @@ fn undo_one_twice_walks_back_two_checkpoints() {
     assert!(!state.fired[1]);
     assert!(!state.fired[2]);
 }
+
+// ---- move_to_boundary ----
+
+#[test]
+fn move_to_boundary_start_promotes_and_demotes() {
+    use CheckpointKind::{End, Split, Start};
+    // Distinct AABBs so we can confirm geometry moved, not just kinds.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(Start, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),   // A
+            cp(Split, (10.0, 0.0, 0.0), (11.0, 1.0, 1.0)), // B
+            cp(Split, (20.0, 0.0, 0.0), (21.0, 1.0, 1.0)), // C
+            cp(End, (30.0, 0.0, 0.0), (31.0, 1.0, 1.0)),   // D
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some(TEST_MAP.to_string()));
+    // Move C (idx 2) to the Start slot: C lands at idx 0 (Start), the old
+    // Start (A) is stranded at idx 1 and demoted to Split.
+    assert!(matches!(
+        state.move_to_boundary(2, Boundary::Start),
+        Ok(true)
+    ));
+    assert_eq!(kinds(&state), vec![Start, Split, Split, End]);
+    let t = state.track.as_ref().unwrap();
+    assert!(
+        matches!(&t.checkpoints[0].trigger, Trigger::Aabb(b) if *b == aabb((20.0, 0.0, 0.0), (21.0, 1.0, 1.0))),
+        "C's geometry is now at the Start slot"
+    );
+    assert!(
+        matches!(&t.checkpoints[1].trigger, Trigger::Aabb(b) if *b == aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))),
+        "A's geometry is now at idx 1 (demoted to Split)"
+    );
+    // Run re-armed.
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false, false, false, false]);
+}
+
+#[test]
+fn move_to_boundary_end_promotes_and_demotes() {
+    use CheckpointKind::{End, Split, Start};
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(Start, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),   // A
+            cp(Split, (10.0, 0.0, 0.0), (11.0, 1.0, 1.0)), // B
+            cp(Split, (20.0, 0.0, 0.0), (21.0, 1.0, 1.0)), // C
+            cp(End, (30.0, 0.0, 0.0), (31.0, 1.0, 1.0)),   // D
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some(TEST_MAP.to_string()));
+    // Move B (idx 1) to the End slot: B lands at idx 3 (End), the old
+    // End (D) shifts to idx 2 and demotes to Split.
+    assert!(matches!(state.move_to_boundary(1, Boundary::End), Ok(true)));
+    assert_eq!(kinds(&state), vec![Start, Split, Split, End]);
+    let t = state.track.as_ref().unwrap();
+    assert!(
+        matches!(&t.checkpoints[3].trigger, Trigger::Aabb(b) if *b == aabb((10.0, 0.0, 0.0), (11.0, 1.0, 1.0))),
+        "B's geometry is now at the End slot"
+    );
+    assert!(
+        matches!(&t.checkpoints[2].trigger, Trigger::Aabb(b) if *b == aabb((30.0, 0.0, 0.0), (31.0, 1.0, 1.0))),
+        "D's geometry is now at idx 2 (demoted to Split)"
+    );
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false, false, false, false]);
+}
+
+#[test]
+fn move_to_boundary_noop_when_already_boundary() {
+    use CheckpointKind::{End, Split, Start};
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string())); // n = 4
+    // Advance cursor so we can confirm the no-op doesn't re-arm it.
+    state.next_index = 2;
+    state.fired = vec![true, true, false, false];
+
+    // idx 0 is already Start.
+    assert!(matches!(
+        state.move_to_boundary(0, Boundary::Start),
+        Ok(false)
+    ));
+    // idx 3 is already End.
+    assert!(matches!(
+        state.move_to_boundary(3, Boundary::End),
+        Ok(false)
+    ));
+
+    // Track and run state unchanged.
+    assert_eq!(kinds(&state), vec![Start, Split, Split, End]);
+    assert_eq!(state.next_index, 2, "no-op does not re-arm");
+    assert_eq!(state.fired, vec![true, true, false, false]);
+}
+
+#[test]
+fn move_to_boundary_out_of_range_errors() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string())); // n = 4
+    assert!(state.move_to_boundary(99, Boundary::Start).is_err());
+    assert!(state.move_to_boundary(99, Boundary::End).is_err());
+}
+
+#[test]
+fn move_to_boundary_errors_without_track() {
+    let mut state = SplitsState::default();
+    assert!(state.move_to_boundary(0, Boundary::Start).is_err());
+    assert!(state.move_to_boundary(0, Boundary::End).is_err());
+}
+
+#[test]
+fn move_to_boundary_rolls_back_on_pairing_inversion() {
+    use CheckpointKind::{End, Pause, Resume, Start};
+    // [Start, Pause, Resume, End]. Moving the Resume (idx 2) to Start
+    // would put it before the Pause -- inversion. The move rolls back.
+    let mut state = SplitsState::default();
+    state.load(track_with_kinds(&[Start, Pause, Resume, End]), None);
+    let result = state.move_to_boundary(2, Boundary::Start);
+    assert!(result.is_err(), "pairing inversion must be rejected");
+    // Track is unchanged (rolled back by move_checkpoint).
+    assert_eq!(kinds(&state), vec![Start, Pause, Resume, End]);
+}
