@@ -189,7 +189,7 @@ impl Module for SplitsModule {
         // next autoload or chat broadcast starts from a clean slate.
         // `with_timer_reset` notifies a connected timer if `unload()`
         // (which zeroes next_index) aborted an active run.
-        with_timer_reset(|| with_state(|s| s.unload()));
+        with_timer_reset("", || with_state(|s| s.unload()));
     }
 
     fn on_new_map_loaded(&mut self) {
@@ -264,7 +264,11 @@ pub fn load_fixture() {
     let name = track.name.clone();
     let starting_map = map::current_map();
     info!(?starting_map, "loading fixture track:\n{track:#?}");
-    if with_state(|s| s.load(track.clone(), starting_map.clone())).is_none() {
+    if with_timer_reset("to load new track", || {
+        with_state(|s| s.load(track.clone(), starting_map.clone()))
+    })
+    .is_none()
+    {
         chat_print("&eLiveSplit: plugin not active");
         return;
     }
@@ -294,7 +298,11 @@ pub fn load_track(track: Track, source: &str) -> bool {
     let name = track.name.clone();
     let starting_map = map::current_map();
     info!(?starting_map, source, "loading track:\n{track:#?}");
-    if with_state(|s| s.load(track.clone(), starting_map.clone())).is_none() {
+    if with_timer_reset("to load new track", || {
+        with_state(|s| s.load(track.clone(), starting_map.clone()))
+    })
+    .is_none()
+    {
         return false;
     }
     if let Some(cb) = LOAD_CALLBACK.get() {
@@ -319,7 +327,11 @@ pub fn new_track(name: String) -> bool {
     // An empty track trivially passes pause/resume pairing; no validate call.
     let starting_map = map::current_map();
     info!(?starting_map, "creating new empty track \"{name}\"");
-    if with_state(|s| s.load(track.clone(), starting_map.clone())).is_none() {
+    if with_timer_reset("to load new track", || {
+        with_state(|s| s.load(track.clone(), starting_map.clone()))
+    })
+    .is_none()
+    {
         chat_print("&eLiveSplit: plugin not active");
         return false;
     }
@@ -443,6 +455,9 @@ pub fn on_timer_event(ev: TimerEvent) {
 /// or an editor edit), then keep a connected timer in sync: if the
 /// mutation aborted an in-progress run, reset the timer too.
 ///
+/// `reason` is appended to the chat notification: non-empty produces
+/// `"run reset {reason}"`, empty produces `"run reset"`.
+///
 /// Brackets the sample-before / notify-after dance into one call so it
 /// can't be split or mis-ordered. Detection is purely state-based: every
 /// re-arming mutator zeroes the cursor on success and leaves it untouched
@@ -451,12 +466,16 @@ pub fn on_timer_event(ev: TimerEvent) {
 /// failures and no-ops fall through without a reset. Silent + no-op when
 /// nothing was running or no timer is attached (the plugin is usable
 /// offline). Returns the mutation's own result unchanged.
-pub fn with_timer_reset<R>(mutate: impl FnOnce() -> R) -> R {
+pub fn with_timer_reset<R>(reason: &str, mutate: impl FnOnce() -> R) -> R {
     let was_in_progress = run_in_progress();
     let out = mutate();
     if was_in_progress && !run_in_progress() && livesplit::any_connected() {
         livesplit::send(Command::Reset { save_attempt: None });
-        chat_print("&eLiveSplit: run reset to allow edit");
+        if reason.is_empty() {
+            chat_print("&eLiveSplit: run reset");
+        } else {
+            chat_print(&format!("&eLiveSplit: run reset {reason}"));
+        }
     }
     out
 }
@@ -476,7 +495,7 @@ pub fn editor_add(aabb: Aabb, label: String, target: Option<usize>) -> Option<us
     // the engine `World` static + tab-list, never `STATE` (same reason
     // `visible_aabbs()` resolves it first).
     let world = map::current_map();
-    match with_timer_reset(|| {
+    match with_timer_reset("to allow edit", || {
         with_state(|s| {
             let resolved = target.or_else(|| {
                 s.track.as_ref().map(|t| {
@@ -509,7 +528,7 @@ pub fn editor_add(aabb: Aabb, label: String, target: Option<usize>) -> Option<us
 /// [`with_timer_reset`] so a connected timer resets if the edit aborted
 /// a run. Returns `true` on success.
 pub fn editor_remove(i: usize) -> bool {
-    match with_timer_reset(|| with_state(|s| s.remove_checkpoint(i))) {
+    match with_timer_reset("to allow edit", || with_state(|s| s.remove_checkpoint(i))) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             false
@@ -537,7 +556,9 @@ pub fn editor_reindex(from: usize, to: usize) -> bool {
         ));
         return false;
     }
-    match with_timer_reset(|| with_state(|s| s.move_checkpoint(from, to))) {
+    match with_timer_reset("to allow edit", || {
+        with_state(|s| s.move_checkpoint(from, to))
+    }) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             false
@@ -595,7 +616,7 @@ pub fn editor_rename(name: String) -> bool {
 /// Like [`editor_add`], runs inside [`with_timer_reset`] so a connected
 /// timer resets if the edit aborted a run. Returns `true` on success.
 pub fn editor_relocate(i: usize, aabb: Aabb) -> bool {
-    match with_timer_reset(|| with_state(|s| s.set_trigger(i, aabb))) {
+    match with_timer_reset("to allow edit", || with_state(|s| s.set_trigger(i, aabb))) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             false
@@ -617,7 +638,7 @@ pub fn editor_relocate(i: usize, aabb: Aabb) -> bool {
 /// -- the mutator defers it to the save/load gates (see
 /// [`geometry::SplitsState::set_kind`]). Returns `true` on success.
 pub fn editor_set_kind(i: usize, target: RetypeTarget) -> bool {
-    match with_timer_reset(|| with_state(|s| s.set_kind(i, target))) {
+    match with_timer_reset("to allow edit", || with_state(|s| s.set_kind(i, target))) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             false
@@ -648,7 +669,9 @@ pub fn editor_set_boundary(i: usize, which: Boundary) -> bool {
         Boundary::Start => "Start",
         Boundary::End => "End",
     };
-    match with_timer_reset(|| with_state(|s| s.move_to_boundary(i, which))) {
+    match with_timer_reset("to allow edit", || {
+        with_state(|s| s.move_to_boundary(i, which))
+    }) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             false

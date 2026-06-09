@@ -119,7 +119,7 @@ pub fn set_enabled(on: bool) {
         // editing starts from a clean idle cursor. `with_timer_reset` brackets
         // the rearm so a connected timer mid-run gets reset too; it's a silent
         // no-op when nothing was running / no timer is attached.
-        splits::with_timer_reset(splits::reset_run);
+        splits::with_timer_reset("to allow edit", splits::reset_run);
     } else {
         hook::uninstall();
         chat_print("&aLiveSplit: edit mode OFF");
