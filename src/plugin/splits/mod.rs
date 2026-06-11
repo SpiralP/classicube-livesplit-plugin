@@ -106,7 +106,16 @@ impl SplitsModule {
                 // `PauseTriggersModule` (background load-remover, not a
                 // user-visible event).
                 let connected = livesplit::any_connected();
-                let snapshot = (!connected).then(|| (state.fired.clone(), state.next_index));
+                let editing = editor::is_enabled();
+                // Authoring isn't a timed attempt. While edit mode is on,
+                // detection still runs (so edge latches stay fresh and
+                // toggling `edit off` while standing in a box doesn't
+                // spuriously fire), but nothing is committed: no
+                // Start/Split/Pause is sent and fired[]/next_index roll back.
+                // `commit` folds both gates: a timer is listening AND we're
+                // not authoring.
+                let commit = connected && !editing;
+                let snapshot = (!commit).then(|| (state.fired.clone(), state.next_index));
                 // `any_fired` is shared between three closures
                 // (`send`, `on_pause`, `on_resume`) and they need to
                 // be live simultaneously while `step()` runs. A
@@ -115,28 +124,27 @@ impl SplitsModule {
                 let any_fired = Cell::new(false);
                 let send = |cmd: Command| {
                     any_fired.set(true);
-                    if connected {
+                    if commit {
                         livesplit::send(cmd);
                     }
                 };
                 // Pause/Resume kinds fire `Command::Split` via `send`
                 // (advancing the LSO segment cursor) AND call the
-                // pause-counter callbacks. Gate both on `connected`
-                // the same way: when disconnected, the disconnect
-                // snapshot rolls back `fired[]`/`next_index`, so a
-                // Pause/Resume checkpoint a player walked through
-                // without a timer attached doesn't bump the counter
-                // either. Edge state (`last_inside`, `last_seen_map`)
-                // still advances so re-entries work after reconnect.
+                // pause-counter callbacks. Gate both on `commit`
+                // the same way: when not committing, the snapshot rolls
+                // back `fired[]`/`next_index`, so a Pause/Resume checkpoint
+                // a player walked through doesn't bump the counter.
+                // Edge state (`last_inside`, `last_seen_map`) still advances
+                // so re-entries work after reconnect / leaving edit mode.
                 let on_pause = || {
                     any_fired.set(true);
-                    if connected {
+                    if commit {
                         pause_triggers::pause_add();
                     }
                 };
                 let on_resume = || {
                     any_fired.set(true);
-                    if connected {
+                    if commit {
                         pause_triggers::pause_sub();
                     }
                 };
@@ -158,11 +166,14 @@ impl SplitsModule {
                 {
                     state.fired = fired;
                     state.next_index = next_index;
-                    drop(state);
-                    chat_print(
-                        "&cLiveSplit: split fired but no timer connected (run /client LiveSplit \
-                         status)",
-                    );
+                    // Silent while authoring; only warn on a genuine
+                    // disconnected fire.
+                    if !editing {
+                        chat_print(
+                            "&cLiveSplit: split fired but no timer connected (run /client \
+                             LiveSplit status)",
+                        );
+                    }
                 }
             });
         }
@@ -218,13 +229,17 @@ impl Module for SplitsModule {
 /// advanced -- preserving the former back-to-back `observe_map` then `step`.
 /// No-op when the plugin is mid-teardown (`with_state` returns `None`).
 fn on_map_change(map_name: &str) {
+    let editing = editor::is_enabled();
     let connected = livesplit::any_connected();
+    // Same `commit` gate as the AABB tick: while editing, detection dry-runs
+    // (edge latch `last_seen_map` still advances) but nothing is committed.
+    let commit = connected && !editing;
     let rolled_back = with_state(|state| {
-        let snapshot = (!connected).then(|| (state.fired.clone(), state.next_index));
+        let snapshot = (!commit).then(|| (state.fired.clone(), state.next_index));
         let any_fired = Cell::new(false);
         let send = |cmd: Command| {
             any_fired.set(true);
-            if connected {
+            if commit {
                 livesplit::send(cmd);
             }
         };
@@ -239,7 +254,7 @@ fn on_map_change(map_name: &str) {
             false
         }
     });
-    if rolled_back == Some(true) {
+    if rolled_back == Some(true) && !editing {
         chat_print(
             "&cLiveSplit: split fired but no timer connected (run /client LiveSplit status)",
         );
@@ -252,7 +267,7 @@ fn on_map_change(map_name: &str) {
     // unload aborts a begun run; `observe_map` already reset an in-progress
     // run above, so this only fires for a *finished* run that hasn't been
     // cleared yet.
-    if !editor::is_enabled() && with_state(|s| s.is_off_track(map_name)).unwrap_or(false) {
+    if !editing && with_state(|s| s.is_off_track(map_name)).unwrap_or(false) {
         with_timer_reset("after leaving the track's maps", || {
             with_state(|s| s.unload());
         });

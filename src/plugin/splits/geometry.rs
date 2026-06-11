@@ -257,7 +257,11 @@ const MAP_COLOR_CODE: &str = "&d";
 /// mirrors the per-row color choice [`format_splits`] makes from the full
 /// [`Trigger`].
 pub(crate) fn row_color_code(kind: CheckpointKind, is_map: bool) -> &'static str {
-    if is_map { MAP_COLOR_CODE } else { kind_color_code(kind) }
+    if is_map {
+        MAP_COLOR_CODE
+    } else {
+        kind_color_code(kind)
+    }
 }
 
 /// Render the loaded track as chat lines for `/client LiveSplit splits`: a
