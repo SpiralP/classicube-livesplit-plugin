@@ -14,7 +14,7 @@ classicube-helpers = { git = "https://github.com/SpiralP/rust-classicube-helpers
 classicube-sys = "=6.0.4"
 futures-util = { version = "=0.3.32", default-features = false }
 livesplit-core = { git = "https://github.com/LiveSplit/livesplit-core.git", tag = "v0.13.0" }
-opener = { version = "=0.8.4", features = ["reveal"] }
+opener = { version = "=0.8.5", features = ["reveal"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 tokio = { version = "=1.52.3", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
