@@ -65,6 +65,8 @@ thread_local! {
     static SPLIT_TEXTURES: RefCell<Vec<Option<OwnedTexture>>> = const { RefCell::new(Vec::new()) };
     /// The rendered row strings `SPLIT_TEXTURES` was built from.
     static LAST_SPLIT_KEY: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// Speeds for cwake support
+    static LOCKED_SPEEDS: RefCell<Vec<u32>> = RefCell::new(Vec::new());
 }
 
 pub fn invalidate() {
@@ -141,6 +143,29 @@ fn draw_overlay(vb: GfxResourceID, edit_mode: bool) {
         let clock = super::clock();
         let elapsed = state.elapsed_now(clock);
 
+        // Insert Cwake speeds to row
+        if !edit_mode {
+            LOCKED_SPEEDS.with_borrow_mut(|speeds| {
+                if state.split_rows.is_empty() {
+                    speeds.clear();
+                } else {
+                    if speeds.len() != state.split_rows.len() {
+                        speeds.resize(state.split_rows.len(), 0);
+                    }
+                    // Clear cache values if the run resets back to start
+                    if state.split_rows.iter().all(|r| r.time.is_none()) {
+                        speeds.fill(0);
+                    }
+                    for (i, row) in state.split_rows.iter().enumerate() {
+                        if row.time.is_some() && speeds[i] == 0 {
+                            speeds[i] = crate::get_live_speed();
+                        }
+                    }
+                }
+            });
+        }
+        /* --------------------------------- */
+
         // --- Clock line (play mode only) ---
         // In edit mode there is no run to time, so the clock is hidden.
         let clock_height = if edit_mode {
@@ -202,11 +227,25 @@ fn draw_overlay(vb: GfxResourceID, edit_mode: bool) {
                 .map(|(kind, label, is_map)| play_row_text(kind, &label, None, is_map))
                 .collect()
         } else {
-            state
-                .split_rows
-                .iter()
-                .map(|row| play_row_text(row.kind, &row.label, row.time, row.is_map))
+            // Append checkpoint speeds to time row
+            LOCKED_SPEEDS.with_borrow(|speeds| {
+                state
+                    .split_rows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, row)| {
+                        let mut base_text = play_row_text(row.kind, &row.label, row.time, row.is_map);
+                        if let Some(&speed) = speeds.get(i) { if speed > 0 {
+                            let speed_float = speed as f32 / 100.0;
+
+                            if speed_float < 10.0 { base_text = format!("{}  &b({:.2})", base_text, speed_float); }
+                            else if speed_float < 100.0 { base_text = format!("{}  &b({:.1})", base_text, speed_float); }
+                            else { base_text = format!("{}  &b({:.0})", base_text, speed_float); }
+                            
+                        }
+                    } base_text })
                 .collect()
+            })
         };
 
         let needs_rebuild =
