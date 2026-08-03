@@ -1,8 +1,11 @@
 pub mod chat;
 pub mod plugin;
 
-use std::{os::raw::c_int, ptr};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+    os::raw::c_int,
+    ptr,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use classicube_helpers::time;
 use classicube_sys::IGameComponent;
@@ -43,7 +46,7 @@ extern "C" fn on_new_map_loaded() {
 }
 
 // CWAKE SUPPORT
-static CHECKPOINT_SPEED: AtomicU32= AtomicU32::new(0);
+static CHECKPOINT_SPEED: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub extern "C" fn LiveSplit_SetCheckpointSpeed(scaled_speed: u32) {
     CHECKPOINT_SPEED.store(scaled_speed, Ordering::Relaxed);
